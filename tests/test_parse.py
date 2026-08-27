@@ -284,3 +284,98 @@ def test_parse_frame_dispatches_into_the_capture(tmp_path):
     assert [record.vlan for record in capture.tagged] == [20]
     assert capture.observed_root_priority() is None
     assert "10.3.0.1" in capture.observed_ips()
+
+
+def router_advert(src_mac, src_ip="fe80::1", lifetime=1800, managed=0):
+    from scapy.layers.inet6 import ICMPv6ND_RA, ICMPv6NDOptPrefixInfo, IPv6
+
+    return (
+        Ether(src=src_mac, dst="33:33:00:00:00:01")
+        / IPv6(src=src_ip, dst="ff02::1")
+        / ICMPv6ND_RA(routerlifetime=lifetime, M=managed)
+        / ICMPv6NDOptPrefixInfo(prefix="2001:db8::", prefixlen=64)
+    )
+
+
+def test_parse_router_advert(tmp_path):
+    record = parse.parse_router_advert(one(tmp_path, router_advert("00:00:5e:00:53:01")))
+    assert record.source_mac == "00:00:5e:00:53:01"
+    assert record.source_ip == "fe80::1"
+    assert record.prefix == "2001:db8::/64"
+    assert record.router_lifetime == 1800
+    assert not record.managed
+
+
+def test_parse_router_advert_ignores_other_icmpv6(tmp_path):
+    from scapy.layers.inet6 import ICMPv6EchoRequest, IPv6
+
+    packet = Ether() / IPv6(src="fe80::1", dst="fe80::2") / ICMPv6EchoRequest()
+    assert parse.parse_router_advert(one(tmp_path, packet)) is None
+
+
+def ssdp(payload, src_ip="192.168.1.1"):
+    return (
+        Ether(src="00:00:5e:00:53:01", dst="01:00:5e:7f:ff:fa")
+        / IP(src=src_ip, dst="239.255.255.250")
+        / UDP(sport=1900, dport=1900)
+        / payload
+    )
+
+
+def test_parse_upnp_keeps_only_the_server_banner(tmp_path):
+    payload = (
+        b"NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n"
+        b"SERVER: Linux/3.4 UPnP/1.0 MiniUPnPd/1.9\r\n"
+        b"LOCATION: http://192.168.1.1:5000/rootDesc.xml\r\n\r\n"
+    )
+    record = parse.parse_upnp(one(tmp_path, ssdp(payload)))
+    assert record.server == "Linux/3.4 UPnP/1.0 MiniUPnPd/1.9"
+    assert record.source_ip == "192.168.1.1"
+    assert "rootDesc" not in repr(record)
+
+
+def test_parse_upnp_ignores_other_udp_1900_traffic(tmp_path):
+    assert parse.parse_upnp(one(tmp_path, ssdp(b"\x00\x01\x02\x03"))) is None
+
+
+def test_parse_upnp_ignores_unrelated_ports(tmp_path):
+    packet = Ether() / IP() / UDP(sport=1234, dport=5678) / b"NOTIFY * HTTP/1.1\r\n\r\n"
+    assert parse.parse_upnp(one(tmp_path, packet)) is None
+
+
+def test_parse_peer_traffic_needs_two_other_stations(tmp_path):
+    packet = one(tmp_path, Ether(src="aa:aa:aa:aa:aa:aa", dst="ba:bb:cc:dd:ee:02") / IP() / TCP())
+    record = parse.parse_peer_traffic(packet, {"cc:cc:cc:cc:cc:cc"})
+    assert record.source_mac == "aa:aa:aa:aa:aa:aa"
+    assert record.destination_mac == "ba:bb:cc:dd:ee:02"
+
+    assert parse.parse_peer_traffic(packet, {"aa:aa:aa:aa:aa:aa"}) is None
+    assert parse.parse_peer_traffic(packet, {"ba:bb:cc:dd:ee:02"}) is None
+    assert parse.parse_peer_traffic(packet, set()) is None
+
+
+def test_parse_peer_traffic_ignores_group_addressed_frames(tmp_path):
+    for destination in ("ff:ff:ff:ff:ff:ff", "01:00:5e:00:00:fb", "33:33:00:00:00:01"):
+        packet = one(tmp_path, Ether(src="aa:aa:aa:aa:aa:aa", dst=destination) / IP() / UDP())
+        assert parse.parse_peer_traffic(packet, {"cc:cc:cc:cc:cc:cc"}) is None
+
+
+def test_parse_frame_records_the_new_checks(tmp_path):
+    payload = b"NOTIFY * HTTP/1.1\r\nSERVER: MiniUPnPd/1.9\r\n\r\n"
+    packets = roundtrip(
+        tmp_path,
+        [
+            router_advert("00:00:5e:00:53:01"),
+            router_advert("de:ad:be:ef:00:01"),
+            ssdp(payload),
+            Ether(src="aa:aa:aa:aa:aa:aa", dst="ba:bb:cc:dd:ee:02") / IP() / TCP(),
+        ],
+    )
+    capture = Capture(interface="wlan0", duration=5)
+    capture.local_macs.add("cc:cc:cc:cc:cc:cc")
+    for packet in packets:
+        parse.parse_frame(packet, capture)
+    assert len(capture.router_adverts) == 2
+    assert len(capture.router_advert_sources()) == 2
+    assert len(capture.upnp) == 1
+    assert len(capture.peer_traffic) == 1

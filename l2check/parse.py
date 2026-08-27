@@ -31,6 +31,7 @@ from scapy.layers.dhcp import BOOTP, DHCP
 from scapy.layers.dns import DNS
 from scapy.layers.hsrp import HSRP
 from scapy.layers.inet import IP, TCP, UDP
+from scapy.layers.inet6 import ICMPv6ND_RA, ICMPv6NDOptPrefixInfo, IPv6
 from scapy.layers.llmnr import LLMNRQuery
 from scapy.layers.l2 import ARP, Dot1Q, Ether, STP
 from scapy.layers.netbios import NBNSQueryRequest
@@ -40,6 +41,9 @@ from scapy.packet import Packet
 
 from l2check.models import (
     ArpRecord,
+    PeerTrafficRecord,
+    RouterAdvertRecord,
+    UpnpRecord,
     BpduRecord,
     Capture,
     CleartextRecord,
@@ -53,6 +57,7 @@ from l2check.models import (
 )
 
 GLBP_PORT = 3222
+SSDP_PORT = 1900
 HSRP_PORT = 1985
 LLMNR_PORT = 5355
 MDNS_PORT = 5353
@@ -291,6 +296,68 @@ def parse_fhrp(pkt: Packet) -> FhrpRecord | None:
     return None
 
 
+def parse_router_advert(pkt: Packet) -> RouterAdvertRecord | None:
+    """Return a record for an IPv6 router advertisement, or None."""
+    if ICMPv6ND_RA not in pkt:
+        return None
+    advert = pkt[ICMPv6ND_RA]
+    prefix = ""
+    option = pkt.getlayer(ICMPv6NDOptPrefixInfo)
+    if option is not None:
+        prefix = "%s/%d" % (option.prefix, option.prefixlen)
+    return RouterAdvertRecord(
+        source_mac=pkt.src,
+        source_ip=pkt[IPv6].src if IPv6 in pkt else "",
+        prefix=prefix,
+        managed=bool(advert.M),
+        router_lifetime=int(advert.routerlifetime),
+    )
+
+
+def parse_upnp(pkt: Packet) -> UpnpRecord | None:
+    """Return a record for an SSDP announcement or search, or None.
+
+    Only the SERVER banner is kept, for the same reason CDP's platform string is
+    kept: it is the disclosure. The rest of the payload is not read.
+    """
+    if UDP not in pkt or SSDP_PORT not in (pkt[UDP].dport, pkt[UDP].sport):
+        return None
+    payload = bytes(pkt[UDP].payload)
+    if not payload.startswith((b"NOTIFY", b"M-SEARCH", b"HTTP/1.1")):
+        return None
+    server = ""
+    for line in payload.split(b"\r\n"):
+        if line.upper().startswith(b"SERVER:"):
+            server = _text(line.split(b":", 1)[1].strip())
+    address = ""
+    if IP in pkt:
+        address = pkt[IP].src
+    elif IPv6 in pkt:
+        address = pkt[IPv6].src
+    return UpnpRecord(source_mac=pkt.src, source_ip=address, server=server)
+
+
+def parse_peer_traffic(pkt: Packet, local_macs: set[str]) -> PeerTrafficRecord | None:
+    """Return a record when a frame is unicast between two other stations.
+
+    A segment that isolates its clients never delivers these. Only the two MAC
+    addresses and the protocol name are kept.
+    """
+    if Ether not in pkt or not local_macs:
+        return None
+    source, destination = pkt[Ether].src.lower(), pkt[Ether].dst.lower()
+    if source in local_macs or destination in local_macs:
+        return None
+    # Group addressed frames reach every station by design and prove nothing.
+    if int(destination.split(":")[0], 16) & 0x01:
+        return None
+    return PeerTrafficRecord(
+        source_mac=source,
+        destination_mac=destination,
+        protocol=pkt.payload.name if pkt.payload else "unknown",
+    )
+
+
 def parse_cleartext(pkt: Packet) -> CleartextRecord | None:
     """Return a record for a cleartext management protocol, or None."""
     if IP not in pkt:
@@ -326,8 +393,13 @@ def parse_frame(pkt: Packet, capture: Capture) -> None:
         (parse_name_resolution, capture.name_resolution),
         (parse_fhrp, capture.fhrp),
         (parse_cleartext, capture.cleartext),
+        (parse_router_advert, capture.router_adverts),
+        (parse_upnp, capture.upnp),
     ):
         record = parser(pkt)
         if record is not None:
             sink.append(record)
     capture.tagged.extend(parse_tagged(pkt))
+    peer = parse_peer_traffic(pkt, capture.local_macs)
+    if peer is not None:
+        capture.peer_traffic.append(peer)

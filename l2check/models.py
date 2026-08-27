@@ -105,6 +105,35 @@ class FhrpRecord:
 
 
 @dataclass
+class RouterAdvertRecord:
+    source_mac: str
+    source_ip: str
+    prefix: str
+    managed: bool
+    router_lifetime: int
+
+
+@dataclass
+class UpnpRecord:
+    source_mac: str
+    source_ip: str
+    server: str
+
+
+@dataclass
+class PeerTrafficRecord:
+    """Traffic between two other stations, seen from this port.
+
+    Only the addresses are kept. Seeing this at all is the finding: it means the
+    segment is not isolating stations from each other.
+    """
+
+    source_mac: str
+    destination_mac: str
+    protocol: str
+
+
+@dataclass
 class CleartextRecord:
     protocol: str
     source: str
@@ -126,6 +155,11 @@ class Capture:
     name_resolution: list[NameResolutionRecord] = field(default_factory=list)
     fhrp: list[FhrpRecord] = field(default_factory=list)
     cleartext: list[CleartextRecord] = field(default_factory=list)
+    router_adverts: list[RouterAdvertRecord] = field(default_factory=list)
+    upnp: list[UpnpRecord] = field(default_factory=list)
+    peer_traffic: list[PeerTrafficRecord] = field(default_factory=list)
+    wireless: object | None = None
+    local_macs: set = field(default_factory=set)
 
     def observed_root_priority(self) -> int | None:
         """Return the best root priority seen, or None if no BPDU was observed."""
@@ -139,4 +173,10 @@ class Capture:
         addresses |= {record.server_ip for record in self.dhcp_servers}
         addresses |= {record.virtual_ip for record in self.fhrp}
         addresses |= {r.management_address for r in self.discovery}
+        addresses |= {r.source_ip for r in self.router_adverts}
+        addresses |= {r.source_ip for r in self.upnp}
         return {address for address in addresses if address}
+
+    def router_advert_sources(self) -> set[str]:
+        """Distinct routers seen advertising, which is what L2P12 counts."""
+        return {record.source_mac for record in self.router_adverts}
