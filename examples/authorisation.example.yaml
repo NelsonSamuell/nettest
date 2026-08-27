@@ -1,0 +1,8 @@
+client: Example Ltd
+engagement: Internal network assessment
+authorised_by: Jane Mwangi, Head of Infrastructure
+contact: jane@example.co.ke
+issued: 2026-09-01
+expires: 2026-09-14
+segment: Floor 3 user VLAN, patch panel port 3-14
+change_window: true
