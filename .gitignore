@@ -6,3 +6,7 @@ build/
 dist/
 .venv/
 venv/
+env/
+
+# Scan output. It describes a real network, so keep it out of the repository.
+posture.json
