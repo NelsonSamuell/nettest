@@ -6,7 +6,6 @@ import yaml
 from l2check import authorisation
 from l2check.authorisation import (
     ActiveSession,
-    Authorisation,
     AuthorisationError,
     NotAuthorised,
     confirm_segment,

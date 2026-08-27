@@ -15,6 +15,7 @@ from __future__ import annotations
 from l2check import frames, posture
 from l2check.authorisation import ActiveSession
 from l2check.models import Capture
+from l2check.observe import ask_observer
 from l2check.posture import ABSENT, INDETERMINATE, PRESENT, UNTESTED, ProbeResult
 
 FRAME_COUNT = 3
@@ -37,8 +38,6 @@ def native_vlan(capture: Capture) -> int:
 
 def run(session: ActiveSession, capture: Capture) -> ProbeResult:
     """L2A06. Send three double tagged echo requests toward the target VLAN."""
-    from l2check.observe import ask_observer
-
     if session.target_vlan is None:
         return _refused("--target-vlan is required")
     if not session.test_ip:

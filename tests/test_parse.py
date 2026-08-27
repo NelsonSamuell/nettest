@@ -1,4 +1,3 @@
-import pytest
 from scapy.contrib.cdp import (
     CDPMsgDeviceID,
     CDPMsgMgmtAddr,
