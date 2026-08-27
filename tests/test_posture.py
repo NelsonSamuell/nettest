@@ -3,6 +3,7 @@ import pytest
 from l2check import posture
 from l2check.models import (
     ArpRecord,
+    CleartextRecord,
     BpduRecord,
     Capture,
     DhcpServerRecord,
@@ -24,9 +25,9 @@ from l2check.posture import (
 
 def test_new_posture_is_entirely_untested():
     board = Posture.new()
-    assert len(board.controls) == 10
+    assert len(board.controls) == len(posture.PROFILES[posture.WIRED])
     assert all(control.state == UNTESTED for control in board.controls.values())
-    assert board.counts()[UNTESTED] == 10
+    assert board.counts()[UNTESTED] == len(board.controls)
     assert board.exit_code() == 0
 
 
@@ -43,8 +44,9 @@ def test_an_unselected_probe_leaves_the_control_untested():
 
 
 def test_an_empty_capture_makes_nothing_absent():
-    board, results = posture.from_capture(Capture())
-    assert board.counts() == {PRESENT: 0, ABSENT: 0, INDETERMINATE: 0, UNTESTED: 10}
+    board, results = posture.from_capture(Capture(), profile=posture.WIRED)
+    total = len(posture.PROFILES[posture.WIRED])
+    assert board.counts() == {PRESENT: 0, ABSENT: 0, INDETERMINATE: 0, UNTESTED: total}
     assert results == []
 
 
@@ -180,3 +182,172 @@ def test_posture_survives_a_json_roundtrip():
     assert restored.counts() == board.counts()
     assert restored.controls[posture.DTP_DISABLED].state == ABSENT
     assert restored.controls[posture.PORT_SECURITY].state == UNTESTED
+
+
+# The wireless profile and the checks that make a home network legible.
+
+from l2check.models import PeerTrafficRecord, RouterAdvertRecord, UpnpRecord
+from l2check.wireless import WirelessLink
+
+
+def wifi(**kwargs):
+    defaults = dict(
+        interface="wlan0",
+        ssid="Example Home",
+        bssid="00:00:5e:00:53:01",
+        security="WPA2",
+        auth_suites=["PSK"],
+        pairwise_ciphers=["CCMP"],
+        group_cipher="CCMP",
+        privacy=True,
+    )
+    defaults.update(kwargs)
+    return WirelessLink(**defaults)
+
+
+def test_the_two_profiles_hold_different_control_sets():
+    wired = Posture.new(posture.WIRED)
+    radio = Posture.new(posture.WIRELESS)
+    assert posture.BPDU_GUARD in wired.controls
+    assert posture.BPDU_GUARD not in radio.controls
+    assert posture.LINK_ENCRYPTION in radio.controls
+    assert posture.LINK_ENCRYPTION not in wired.controls
+    # The common controls are in both, which is the point of the split.
+    for name in posture.COMMON_CONTROLS:
+        assert name in wired.controls and name in radio.controls
+
+
+def test_an_unknown_profile_is_rejected():
+    with pytest.raises(ValueError):
+        Posture.new("carrier pigeon")
+
+
+def test_profile_is_chosen_from_the_capture():
+    assert posture.profile_for(Capture(interface="eth0")) == posture.WIRED
+    assert posture.profile_for(Capture(interface="wlan0", wireless=wifi())) == posture.WIRELESS
+
+
+def test_a_control_outside_the_profile_is_added_not_refused():
+    board = Posture.new(posture.WIRELESS)
+    board.set(posture.BPDU_GUARD, ABSENT, "L2A02 active probe")
+    assert board.controls[posture.BPDU_GUARD].state == ABSENT
+    with pytest.raises(KeyError):
+        board.set("Imaginary Guard", ABSENT, "nowhere")
+
+
+def test_name_resolution_queries_now_drive_a_control():
+    capture = Capture(
+        name_resolution=[
+            NameResolutionRecord("mDNS", "00:11:22:33:44:01", "_airplay._tcp.local"),
+            NameResolutionRecord("LLMNR", "00:11:22:33:44:02", "printer"),
+        ]
+    )
+    board, _ = posture.from_capture(capture, profile=posture.WIRELESS)
+    control = board.controls[posture.NAME_RESOLUTION]
+    assert control.state == ABSENT
+    assert "2 hosts" in control.detail
+
+
+def test_cleartext_management_now_drives_a_control():
+    capture = Capture(cleartext=[CleartextRecord("Telnet", "10.0.0.7", "10.0.0.1")])
+    board, _ = posture.from_capture(capture, profile=posture.WIRELESS)
+    assert board.controls[posture.MGMT_ENCRYPTION].state == ABSENT
+
+
+def test_two_ra_sources_make_ra_guard_absent():
+    capture = Capture(
+        router_adverts=[
+            RouterAdvertRecord("00:00:5e:00:53:01", "fe80::1", "2001:db8::/64", False, 1800),
+            RouterAdvertRecord("de:ad:be:ef:00:01", "fe80::666", "2001:db8::/64", False, 1800),
+        ]
+    )
+    board, results = posture.from_capture(capture, profile=posture.WIRELESS)
+    assert board.controls[posture.RA_GUARD].state == ABSENT
+    assert [f.severity for f in results if f.check == "L2P12"] == ["HIGH"]
+
+
+def test_one_ra_source_stays_untested_and_refuses_to_prove_it():
+    capture = Capture(
+        router_adverts=[
+            RouterAdvertRecord("00:00:5e:00:53:01", "fe80::1", "2001:db8::/64", False, 1800)
+        ]
+    )
+    board, results = posture.from_capture(capture, profile=posture.WIRELESS)
+    control = board.controls[posture.RA_GUARD]
+    assert control.state == UNTESTED
+    assert "does not" in control.detail
+    assert [f.severity for f in results if f.check == "L2P12"] == ["MEDIUM"]
+
+
+def test_peer_traffic_makes_client_isolation_absent():
+    capture = Capture(
+        peer_traffic=[PeerTrafficRecord("aa:aa:aa:aa:aa:aa", "ba:bb:cc:dd:ee:02", "IP")]
+    )
+    board, results = posture.from_capture(capture, profile=posture.WIRELESS)
+    assert board.controls[posture.CLIENT_ISOLATION].state == ABSENT
+    assert any(f.check == "L2P14" and f.severity == "HIGH" for f in results)
+
+
+def test_upnp_makes_the_control_absent():
+    capture = Capture(upnp=[UpnpRecord("00:00:5e:00:53:01", "192.168.1.1", "MiniUPnPd/1.9")])
+    board, results = posture.from_capture(capture, profile=posture.WIRELESS)
+    assert board.controls[posture.UPNP_DISABLED].state == ABSENT
+    assert any("MiniUPnPd/1.9" in f.title for f in results)
+
+
+def test_wpa2_ccmp_is_present_and_open_is_absent():
+    good, _ = posture.from_capture(Capture(interface="wlan0", wireless=wifi()))
+    assert good.controls[posture.LINK_ENCRYPTION].state == PRESENT
+
+    link = wifi(security="Open", privacy=False, auth_suites=[], pairwise_ciphers=[], group_cipher="")
+    bad, results = posture.from_capture(Capture(interface="wlan0", wireless=link))
+    assert bad.controls[posture.LINK_ENCRYPTION].state == ABSENT
+    assert any(f.check == "L2P15" and f.severity == "HIGH" for f in results)
+
+
+def test_tkip_counts_as_broken_even_under_wpa2():
+    link = wifi(pairwise_ciphers=["TKIP", "CCMP"])
+    board, results = posture.from_capture(Capture(interface="wlan0", wireless=link))
+    assert board.controls[posture.LINK_ENCRYPTION].state == ABSENT
+    assert any("TKIP" in f.title for f in results)
+
+
+def test_pmf_has_three_distinct_outcomes():
+    absent, results = posture.from_capture(Capture(interface="wlan0", wireless=wifi()))
+    assert absent.controls[posture.PMF].state == ABSENT
+    assert any(f.check == "L2P16" and f.severity == "HIGH" for f in results)
+
+    capable = wifi(pmf_capable=True)
+    board, results = posture.from_capture(Capture(interface="wlan0", wireless=capable))
+    assert board.controls[posture.PMF].state == INDETERMINATE
+    assert any(f.check == "L2P16" and f.severity == "MEDIUM" for f in results)
+
+    required = wifi(pmf_capable=True, pmf_required=True)
+    board, results = posture.from_capture(Capture(interface="wlan0", wireless=required))
+    assert board.controls[posture.PMF].state == PRESENT
+    assert not [f for f in results if f.check == "L2P16"]
+
+
+def test_wps_flips_its_control_both_ways():
+    on, results = posture.from_capture(Capture(interface="wlan0", wireless=wifi(wps=True)))
+    assert on.controls[posture.WPS_DISABLED].state == ABSENT
+    assert any(f.check == "L2P17" for f in results)
+
+    off, _ = posture.from_capture(Capture(interface="wlan0", wireless=wifi()))
+    assert off.controls[posture.WPS_DISABLED].state == PRESENT
+
+
+def test_a_wireless_capture_no_longer_reads_entirely_untested():
+    """The whole point of the wireless profile: a home network says something."""
+    capture = Capture(
+        interface="wlan0",
+        wireless=wifi(),
+        name_resolution=[NameResolutionRecord("mDNS", "00:11:22:33:44:01", "_airplay._tcp.local")],
+        upnp=[UpnpRecord("00:00:5e:00:53:01", "192.168.1.1", "MiniUPnPd/1.9")],
+    )
+    board, results = posture.from_capture(capture)
+    counts = board.counts()
+    assert counts[UNTESTED] < len(board.controls)
+    assert counts[ABSENT] >= 3
+    assert counts[PRESENT] >= 1
+    assert results

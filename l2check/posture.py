@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 
+from l2check import wireless
 from l2check.models import HIGH, MEDIUM, Capture, Finding
 
 PRESENT = "PRESENT"
@@ -31,18 +32,55 @@ DISCOVERY_DISABLED = "Discovery protocol disclosure disabled"
 VLAN_PRUNING = "Unused VLAN pruning"
 FHRP_AUTH = "First-hop redundancy authentication"
 
-CONTROL_NAMES = (
+NAME_RESOLUTION = "Name resolution poisoning protection"
+MGMT_ENCRYPTION = "Management plane encryption"
+RA_GUARD = "IPv6 RA Guard"
+CLIENT_ISOLATION = "Client isolation"
+UPNP_DISABLED = "UPnP IGD disabled"
+
+LINK_ENCRYPTION = "Link encryption"
+PMF = "Protected Management Frames"
+WPS_DISABLED = "WPS disabled"
+
+WIRED = "wired"
+WIRELESS = "wireless"
+
+# Controls that mean something on any segment, wired or wireless.
+COMMON_CONTROLS = (
+    DHCP_SNOOPING,
+    ARP_INSPECTION,
+    NAME_RESOLUTION,
+    MGMT_ENCRYPTION,
+    RA_GUARD,
+    CLIENT_ISOLATION,
+    UPNP_DISABLED,
+)
+
+# Controls that only exist on a switch port.
+WIRED_CONTROLS = (
     BPDU_GUARD,
     ROOT_GUARD,
     DTP_DISABLED,
-    DHCP_SNOOPING,
-    ARP_INSPECTION,
     PORT_SECURITY,
     NATIVE_VLAN,
     DISCOVERY_DISABLED,
     VLAN_PRUNING,
     FHRP_AUTH,
 )
+
+# Controls that only exist on a radio link.
+WIRELESS_CONTROLS = (
+    LINK_ENCRYPTION,
+    PMF,
+    WPS_DISABLED,
+)
+
+PROFILES = {
+    WIRED: WIRED_CONTROLS + COMMON_CONTROLS,
+    WIRELESS: WIRELESS_CONTROLS + COMMON_CONTROLS,
+}
+
+CONTROL_NAMES = WIRED_CONTROLS + WIRELESS_CONTROLS + COMMON_CONTROLS
 
 # Root Guard cannot be tested without sending a BPDU superior to the current
 # root, which is the one thing this tool will never do.
@@ -72,19 +110,26 @@ class ProbeResult:
 @dataclass
 class Posture:
     controls: dict[str, Control] = field(default_factory=dict)
+    profile: str = WIRED
 
     @classmethod
-    def new(cls) -> "Posture":
-        """Return a posture with every control UNTESTED."""
-        posture = cls()
-        for name in CONTROL_NAMES:
+    def new(cls, profile: str = WIRED) -> "Posture":
+        """Return a posture with every control in the profile UNTESTED."""
+        if profile not in PROFILES:
+            raise ValueError("unknown profile: %s" % profile)
+        posture = cls(profile=profile)
+        for name in PROFILES[profile]:
             reason = ROOT_GUARD_REASON if name == ROOT_GUARD else "probe not selected"
             posture.controls[name] = Control(name, UNTESTED, reason, "")
         return posture
 
     def set(self, name: str, state: str, basis: str, detail: str = "") -> None:
-        """Record a state for one control."""
-        if name not in self.controls:
+        """Record a state for one control.
+
+        A control outside the profile is added rather than refused, so a probe
+        aimed at the other medium still reports what it found.
+        """
+        if name not in self.controls and name not in CONTROL_NAMES:
             raise KeyError("unknown control: %s" % name)
         if state not in STATES:
             raise ValueError("unknown state: %s" % state)
@@ -112,8 +157,8 @@ class Posture:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Posture":
-        posture = cls.new()
+    def from_dict(cls, data: dict, profile: str = WIRED) -> "Posture":
+        posture = cls.new(profile)
         for name, values in data.items():
             posture.set(name, values["state"], values["basis"], values.get("detail", ""))
         return posture
@@ -228,6 +273,131 @@ def apply_passive(posture: Posture, capture: Capture) -> None:
             PRESENT,
             "L2P10 passive",
             "%s advertisements carry authentication" % capture.fhrp[0].protocol,
+        )
+
+    hosts = {record.source_mac for record in capture.name_resolution}
+    if hosts:
+        protocols = ", ".join(_distinct(r.protocol for r in capture.name_resolution))
+        posture.set(
+            NAME_RESOLUTION,
+            ABSENT,
+            "L2P09 passive",
+            "%s queries from %d host%s, any of which can be answered by anyone "
+            "on the segment" % (protocols, len(hosts), "" if len(hosts) == 1 else "s"),
+        )
+
+    if capture.cleartext:
+        protocols = ", ".join(_distinct(r.protocol for r in capture.cleartext))
+        posture.set(
+            MGMT_ENCRYPTION,
+            ABSENT,
+            "L2P11 passive",
+            "%s observed in cleartext between other hosts" % protocols,
+        )
+
+    routers = capture.router_advert_sources()
+    if len(routers) > 1:
+        posture.set(
+            RA_GUARD,
+            ABSENT,
+            "L2P12 passive",
+            "%d sources advertising IPv6 routes: %s"
+            % (len(routers), ", ".join(sorted(routers))),
+        )
+    elif routers:
+        posture.set(
+            RA_GUARD,
+            UNTESTED,
+            "L2P12 passive, one router only",
+            "one router advertising; proving RA Guard absent would mean sending "
+            "a router advertisement, which would reconfigure every host that "
+            "believed it, so this tool does not",
+        )
+
+    if capture.peer_traffic:
+        pairs = _distinct((r.source_mac, r.destination_mac) for r in capture.peer_traffic)
+        posture.set(
+            CLIENT_ISOLATION,
+            ABSENT,
+            "L2P14 passive",
+            "unicast traffic between %d pair%s of other stations reached this "
+            "port" % (len(pairs), "" if len(pairs) == 1 else "s"),
+        )
+
+    if capture.upnp:
+        servers = _distinct(r.server for r in capture.upnp if r.server)
+        posture.set(
+            UPNP_DISABLED,
+            ABSENT,
+            "L2P13 passive",
+            "UPnP announced on the segment%s"
+            % (": " + ", ".join(servers) if servers else ""),
+        )
+
+
+def apply_wireless(posture: Posture, link) -> None:
+    """Fold the read-only wireless link facts into the posture.
+
+    These come from the kernel's cached scan results. Nothing was transmitted to
+    learn them, so unlike the passive frame checks they can report PRESENT.
+    """
+    if link is None:
+        return
+
+    weak = link.weak_cipher
+    if not link.encrypted:
+        posture.set(
+            LINK_ENCRYPTION,
+            ABSENT,
+            "L2P15 wireless link",
+            "the link is %s, so every frame is readable by anyone in range"
+            % link.security,
+        )
+    elif weak or link.security == wireless.WPA:
+        posture.set(
+            LINK_ENCRYPTION,
+            ABSENT,
+            "L2P15 wireless link",
+            "%s with %s, which is broken" % (link.security, weak or "a legacy cipher"),
+        )
+    else:
+        posture.set(
+            LINK_ENCRYPTION,
+            PRESENT,
+            "L2P15 wireless link",
+            "%s with %s" % (link.security, link.group_cipher or "a modern cipher"),
+        )
+
+    if link.pmf_required:
+        posture.set(PMF, PRESENT, "L2P16 wireless link", "management frames are protected")
+    elif link.pmf_capable:
+        posture.set(
+            PMF,
+            INDETERMINATE,
+            "L2P16 wireless link",
+            "the access point offers protected management frames but does not "
+            "require them, so a client that does not ask for them can still be "
+            "deauthenticated",
+        )
+    else:
+        posture.set(
+            PMF,
+            ABSENT,
+            "L2P16 wireless link",
+            "802.11w is not offered, so any device in range can deauthenticate "
+            "any station on this network",
+        )
+
+    if link.wps:
+        posture.set(
+            WPS_DISABLED,
+            ABSENT,
+            "L2P17 wireless link",
+            "WPS is advertised by the access point",
+        )
+    else:
+        posture.set(
+            WPS_DISABLED, PRESENT, "L2P17 wireless link", "WPS is not advertised"
         )
 
 
@@ -345,12 +515,120 @@ def findings(capture: Capture) -> list[Finding]:
             )
         )
 
+    routers = capture.router_advert_sources()
+    if len(routers) > 1:
+        results.append(
+            Finding(
+                HIGH,
+                "L2P12",
+                "%d sources advertising IPv6 routes, so a rogue advertisement "
+                "is already reaching this port: %s"
+                % (len(routers), ", ".join(sorted(routers))),
+            )
+        )
+    elif routers:
+        prefixes = _distinct(r.prefix for r in capture.router_adverts if r.prefix)
+        results.append(
+            Finding(
+                MEDIUM,
+                "L2P12",
+                "IPv6 router advertisements for %s; hosts autoconfigure from "
+                "whatever advertises, so this is the rogue router surface"
+                % (", ".join(prefixes) or "an unnamed prefix"),
+            )
+        )
+
+    for server in _distinct(r.server or "an unnamed device" for r in capture.upnp):
+        results.append(
+            Finding(
+                MEDIUM,
+                "L2P13",
+                "UPnP announced by %s, which lets any host on the segment open "
+                "ports on the router" % server,
+            )
+        )
+
+    pairs = _distinct((r.source_mac, r.destination_mac) for r in capture.peer_traffic)
+    if pairs:
+        results.append(
+            Finding(
+                HIGH,
+                "L2P14",
+                "Traffic between other stations is visible from this port, %d "
+                "pair%s seen; clients are not isolated from each other"
+                % (len(pairs), "" if len(pairs) == 1 else "s"),
+            )
+        )
+
+    results.extend(wireless_findings(capture.wireless))
+
+    order = {HIGH: 0, MEDIUM: 1}
+
     order = {HIGH: 0, MEDIUM: 1}
     return sorted(results, key=lambda finding: (order.get(finding.severity, 2), finding.check))
 
 
-def from_capture(capture: Capture) -> tuple[Posture, list[Finding]]:
+def wireless_findings(link) -> list[Finding]:
+    """Return the findings the read-only wireless link facts support."""
+    if link is None:
+        return []
+    results: list[Finding] = []
+
+    if not link.encrypted:
+        results.append(
+            Finding(
+                HIGH,
+                "L2P15",
+                "Wireless link is %s, so every frame is readable by anyone in range"
+                % link.security,
+            )
+        )
+    elif link.weak_cipher or link.security == wireless.WPA:
+        results.append(
+            Finding(
+                HIGH,
+                "L2P15",
+                "Wireless link uses %s with %s, which is broken"
+                % (link.security, link.weak_cipher or "a legacy cipher"),
+            )
+        )
+
+    if not link.pmf_capable:
+        results.append(
+            Finding(
+                HIGH,
+                "L2P16",
+                "No protected management frames, so any device in range can "
+                "deauthenticate any station on this network",
+            )
+        )
+    elif not link.pmf_required:
+        results.append(
+            Finding(
+                MEDIUM,
+                "L2P16",
+                "Protected management frames are offered but not required, so a "
+                "client that does not ask for them can still be deauthenticated",
+            )
+        )
+
+    if link.wps:
+        results.append(
+            Finding(HIGH, "L2P17", "WPS is advertised by the access point")
+        )
+    return results
+
+
+def profile_for(capture: Capture) -> str:
+    """Pick the control set that matches the medium the capture came from."""
+    if capture.wireless is not None or wireless.is_wireless(capture.interface):
+        return WIRELESS
+    return WIRED
+
+
+def from_capture(capture: Capture, profile: str | None = None) -> tuple[Posture, list[Finding]]:
     """Build the posture and findings a passive capture supports."""
-    posture = Posture.new()
+    posture = Posture.new(profile or profile_for(capture))
     apply_passive(posture, capture)
+    apply_wireless(posture, capture.wireless)
     return posture, findings(capture)
