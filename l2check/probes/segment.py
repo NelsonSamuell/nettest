@@ -13,7 +13,6 @@ sends a second frame to an address that answered.
 from __future__ import annotations
 
 import ipaddress
-import time
 
 from scapy.layers.inet import IP, UDP
 from scapy.layers.l2 import ARP, Ether
