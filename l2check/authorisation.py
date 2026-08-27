@@ -37,6 +37,8 @@ ACTIVE_CHECKS = (
     "L2A05",
     "L2A06",
     "L2A07",
+    "L2A08",
+    "L2A09",
 )
 
 # Global caps for one active run. These are ceilings across every probe
@@ -228,6 +230,7 @@ class ActiveSession:
     max_macs: int = DEFAULT_MAX_MACS
     test_ip: str | None = None
     target_vlan: int | None = None
+    local_cidr: str | None = None
     observer: str | None = None
     frame_cap: int = TOTAL_FRAME_CAP
     runtime_cap: int = TOTAL_RUNTIME_CAP

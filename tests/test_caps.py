@@ -201,3 +201,80 @@ def test_port_security_never_asks_for_more_than_the_remaining_budget(gated):
     result = port_security.run(session, Capture())
     assert result.frames_sent == 3
     assert session.frames_sent == 10
+
+
+# The segment probes added for wireless and home networks.
+
+def test_client_isolation_never_enumerates_a_large_network():
+    from l2check.probes.segment import neighbour_addresses
+
+    with pytest.raises(ValueError):
+        neighbour_addresses("10.0.0.1/8", 25)
+    assert len(neighbour_addresses("192.168.1.10/24", 25)) == 25
+
+
+def test_client_isolation_skips_our_own_address():
+    from l2check.probes.segment import neighbour_addresses
+
+    assert "192.168.1.10" not in neighbour_addresses("192.168.1.10/24", 50)
+
+
+def test_client_isolation_is_bounded_by_the_default_and_the_budget(gated, monkeypatch):
+    from l2check.probes import segment
+
+    session, sent = gated
+    session.local_cidr = "192.168.1.10/24"
+    monkeypatch.setattr(segment, "GAP_SECONDS", 0)
+    monkeypatch.setattr(segment, "listen_after_send", lambda s, f, seconds, match: s.send(f) and [])
+
+    result = segment.run_client_isolation(session, Capture())
+    assert result.frames_sent == segment.DEFAULT_NEIGHBOURS == 25
+    assert len(sent) == 25
+
+    session.frames_sent = 0
+    sent.clear()
+    session.frame_cap = 4
+    result = segment.run_client_isolation(session, Capture())
+    assert result.frames_sent == 4
+    assert len(sent) == 4
+
+
+def test_client_isolation_refuses_without_an_address(gated):
+    from l2check.probes import segment
+
+    session, sent = gated
+    session.local_cidr = None
+    result = segment.run_client_isolation(session, Capture())
+    assert result.state == "UNTESTED"
+    assert sent == []
+
+
+def test_upnp_probe_sends_exactly_one_frame(gated, monkeypatch):
+    from l2check.probes import segment
+
+    session, sent = gated
+    session.local_cidr = "192.168.1.10/24"
+    monkeypatch.setattr(
+        segment, "listen_after_send", lambda s, f, seconds, match: s.send(f) and []
+    )
+    result = segment.run_upnp(session, Capture())
+    assert result.frames_sent == 1
+    assert len(sent) == 1
+
+
+def test_upnp_probe_refuses_without_an_address(gated):
+    from l2check.probes import segment
+
+    session, sent = gated
+    session.local_cidr = None
+    assert segment.run_upnp(session, Capture()).state == "UNTESTED"
+    assert sent == []
+
+
+def test_the_new_probes_are_still_behind_the_gate():
+    from l2check.probes import segment
+
+    session = ActiveSession(interface="wlan0", sender=lambda i, f: None)
+    session.local_cidr = "192.168.1.10/24"
+    with pytest.raises(NotAuthorised):
+        segment.run_upnp(session, Capture())

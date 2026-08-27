@@ -28,6 +28,22 @@ def interface_mac(interface: str) -> str:
     return path.read_text().strip().lower()
 
 
+def interface_cidr(interface: str) -> str:
+    """Return the interface's IPv4 address in CIDR form, or an empty string."""
+    from scapy.arch import get_if_addr
+    from scapy.config import conf
+
+    address = get_if_addr(interface)
+    if not address or address == "0.0.0.0":
+        return ""
+    for route in conf.route.routes:
+        network, netmask, _, iface, _, _ = route
+        if iface == interface and netmask not in (0, 0xFFFFFFFF) and network:
+            bits = bin(netmask).count("1")
+            return "%s/%d" % (address, bits)
+    return "%s/24" % address
+
+
 def capture(
     interface: str,
     duration: int = DEFAULT_DURATION,

@@ -53,7 +53,15 @@ def listen_after_send(
 
 def registry() -> dict[str, Callable[[ActiveSession, Capture], ProbeResult]]:
     """Map each probe identifier to the function that runs it."""
-    from l2check.probes import arp, dhcp, port_security, spanning_tree, trunking, vlan_hop
+    from l2check.probes import (
+        arp,
+        dhcp,
+        port_security,
+        segment,
+        spanning_tree,
+        trunking,
+        vlan_hop,
+    )
 
     return {
         "L2A01": trunking.run_dtp,
@@ -63,6 +71,8 @@ def registry() -> dict[str, Callable[[ActiveSession, Capture], ProbeResult]]:
         "L2A05": arp.run,
         "L2A06": vlan_hop.run,
         "L2A07": trunking.run_discovery_injection,
+        "L2A08": segment.run_client_isolation,
+        "L2A09": segment.run_upnp,
     }
 
 
