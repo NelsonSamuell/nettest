@@ -76,6 +76,7 @@ def to_dict(
 ) -> dict:
     """Build the JSON form of a run."""
     document: dict = {
+        "profile": posture.profile,
         "controls": posture.to_dict(),
         "findings": [
             {"severity": f.severity, "check": f.check, "title": f.title} for f in findings
@@ -88,7 +89,35 @@ def to_dict(
             "interface": capture.interface,
             "duration": capture.duration,
             "frames_seen": capture.frames_seen,
+            "records": {
+                "discovery": len(capture.discovery),
+                "dtp": len(capture.dtp),
+                "bpdu": len(capture.bpdu),
+                "vtp": len(capture.vtp),
+                "tagged": len(capture.tagged),
+                "dhcp_servers": len(capture.dhcp_servers),
+                "arp": len(capture.arp),
+                "name_resolution": len(capture.name_resolution),
+                "fhrp": len(capture.fhrp),
+                "cleartext": len(capture.cleartext),
+                "router_adverts": len(capture.router_adverts),
+                "upnp": len(capture.upnp),
+                "peer_traffic": len(capture.peer_traffic),
+            },
         }
+        if capture.wireless is not None:
+            link = capture.wireless
+            document["wireless"] = {
+                "ssid": link.ssid,
+                "bssid": link.bssid,
+                "security": link.security,
+                "group_cipher": link.group_cipher,
+                "pairwise_ciphers": link.pairwise_ciphers,
+                "auth_suites": link.auth_suites,
+                "pmf_capable": link.pmf_capable,
+                "pmf_required": link.pmf_required,
+                "wps": link.wps,
+            }
     if authorisation is not None:
         document["authorisation"] = {
             "file": authorisation.path,
@@ -108,7 +137,7 @@ def to_json(document: dict) -> str:
 
 def from_dict(document: dict) -> tuple[Posture, list[Finding]]:
     """Rebuild a posture and its findings from a saved JSON report."""
-    posture = Posture.from_dict(document["controls"])
+    posture = Posture.from_dict(document["controls"], document.get("profile", "wired"))
     findings = [
         Finding(item["severity"], item["check"], item["title"])
         for item in document.get("findings", [])

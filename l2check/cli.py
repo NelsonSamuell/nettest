@@ -44,6 +44,12 @@ def build_parser() -> argparse.ArgumentParser:
     listener.add_argument("--duration", type=int, default=listen.DEFAULT_DURATION)
     listener.add_argument("--json", action="store_true", help="print JSON instead of a table")
     listener.add_argument("--out", help="write the JSON report to this path")
+    listener.add_argument(
+        "--profile",
+        choices=("auto", posture.WIRED, posture.WIRELESS),
+        default="auto",
+        help="which control set to report; auto follows the interface",
+    )
 
     prober = sub.add_parser("probe", help="active probes, requires written authorisation")
     prober.add_argument("--interface", required=True)
@@ -58,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
     prober.add_argument("--duration", type=int, default=listen.DEFAULT_DURATION)
     prober.add_argument("--json", action="store_true")
     prober.add_argument("--out")
+    prober.add_argument(
+        "--profile",
+        choices=("auto", posture.WIRED, posture.WIRELESS),
+        default="auto",
+    )
 
     observer = sub.add_parser("observe", help="cooperating listener for L2A05 and L2A06")
     observer.add_argument("--interface", required=True)
@@ -75,9 +86,14 @@ def _emit(document: dict, board: posture.Posture, findings: list, args) -> None:
     print(report.to_json(document) if args.json else report.render(board, findings))
 
 
+def _profile(args) -> str | None:
+    """None lets the posture model pick the profile from the interface."""
+    return None if args.profile == "auto" else args.profile
+
+
 def run_listen(args) -> int:
     capture = listen.capture(args.interface, args.duration)
-    board, findings = posture.from_capture(capture)
+    board, findings = posture.from_capture(capture, profile=_profile(args))
     _emit(report.to_dict(board, findings, capture=capture), board, findings, args)
     return board.exit_code()
 
@@ -96,7 +112,7 @@ def run_probe(args) -> int:
     # The passive capture happens before the gate is opened: L2A02 cannot pick a
     # losing bridge priority without a root priority observed from this port.
     capture = listen.capture(args.interface, args.duration)
-    board, findings = posture.from_capture(capture)
+    board, findings = posture.from_capture(capture, profile=_profile(args))
 
     session = ActiveSession(
         interface=args.interface,
@@ -104,6 +120,7 @@ def run_probe(args) -> int:
         test_ip=args.test_ip,
         target_vlan=args.target_vlan,
         observer=args.observer,
+        local_cidr=listen.interface_cidr(args.interface) or None,
     )
     session.authorise(authorisation, tests)
     for result in probes.run_selected(session, capture):

@@ -2,11 +2,12 @@
 
 ## What it does
 
-l2check plugs into a switch port and reports which layer 2 protections the
-network actually enforces on that port. It listens for discovery, trunking and
-spanning tree traffic, then optionally sends bounded probes to determine whether
-BPDU Guard, DHCP Snooping, Dynamic ARP Inspection and port security are in
-place. The output is a posture table, not an exploit.
+l2check attaches to a switch port or a wireless link and reports which layer 2
+protections the network actually enforces there. It listens for discovery,
+trunking, spanning tree, name resolution and router advertisement traffic, then
+optionally sends bounded probes to determine whether protections like BPDU
+Guard, DHCP Snooping, client isolation and port security are in place. The
+output is a posture table, not an exploit.
 
 ## Prove it is possible, never perform it
 
@@ -23,6 +24,7 @@ The caps are enforced in code, across the whole run:
 | Total frames, all probes combined | 600 |
 | Total active runtime | 10 minutes |
 | MAC addresses introduced by L2A03 | 50 by default, 500 ceiling |
+| Neighbours asked by L2A08 | 25 by default, 50 ceiling |
 | Probes run | only those named in `--tests` |
 
 No flag raises any of them, and there is no option to run every probe at once.
@@ -37,6 +39,9 @@ These are never implemented, behind any flag:
 - DHCP pool exhaustion
 - Capturing, storing or writing to disk the payload of any frame not addressed
   to or from the tool's own interface
+- Monitor mode, deauthentication, handshake capture, or radio injection
+- Sending an IPv6 router advertisement, which would reconfigure every host that
+  believed it
 
 The passive listener records protocol metadata only. It never writes a frame
 payload to a pcap or a log.
@@ -54,6 +59,27 @@ today is inside the window, requires the segment string to be retyped, and
 records the SHA-256 of the file in the report. There is no override flag for any
 of it. `AUTHORISATION.md` describes each probe in the terms a network manager
 needs to approve it.
+
+## Wired and wireless profiles
+
+The controls worth reporting depend on the medium, so there are two control
+sets and the interface picks one:
+
+- **wired**, on a switch port: the eight switch controls plus the seven common
+  ones.
+- **wireless**, on a radio link: link encryption, protected management frames
+  and WPS, plus the same seven common ones.
+
+Detection follows `/sys/class/net/<iface>/wireless`, and `--profile wired` or
+`--profile wireless` overrides it. The wireless facts come from the kernel's
+cached scan results through `iw`, which needs no privileges and transmits
+nothing.
+
+Monitor mode is deliberately not used, and neither is deauthentication,
+handshake capture or any form of radio injection. Monitor mode would drop the
+connection, which is the kind of outage this tool refuses to be able to cause.
+That is the limit of what it can say about the radio: it reports what the access
+point advertises, not what it does under attack.
 
 ## Install and run
 
@@ -98,6 +124,12 @@ or authorisation error.
 | L2P09 | Name resolution poisoning surface | passive | 0 |
 | L2P10 | First-hop redundancy without authentication | passive | 0 |
 | L2P11 | Cleartext management protocols | passive | 0 |
+| L2P12 | IPv6 router advertisements, rogue RA surface | passive | 0 |
+| L2P13 | UPnP and SSDP exposure | passive | 0 |
+| L2P14 | Peer station traffic visible, clients not isolated | passive | 0 |
+| L2P15 | Wireless link encryption | read-only | 0 |
+| L2P16 | Protected management frames, 802.11w | read-only | 0 |
+| L2P17 | WPS advertised | read-only | 0 |
 | L2A01 | DTP trunk negotiation | active | 1 |
 | L2A02 | BPDU Guard verification | active | 1 |
 | L2A03 | Port security threshold | active | up to 50, ceiling 500 |
@@ -105,6 +137,8 @@ or authorisation error.
 | L2A05 | Dynamic ARP Inspection | active | 1, plus 2 pre-flight checks |
 | L2A06 | Double tagging reachability | active | 3 |
 | L2A07 | Discovery protocol injection | active | 1 |
+| L2A08 | Client isolation | active | up to 25 |
+| L2A09 | UPnP gateway reachability | active | 1 |
 
 L2A05 and L2A06 need a cooperating listener on the target segment, started with
 `l2check observe` and named with `--observer HOST:PORT`.
@@ -125,7 +159,13 @@ Ten controls, each in one of four states.
 `UNTESTED` is not a pass. A quiet port is not a protected port, and the tool
 never collapses `UNTESTED` into `ABSENT` or into `PRESENT` in either direction.
 Root Guard is always `UNTESTED`, because testing it would mean sending a BPDU
-superior to the current root, which this tool will not do.
+superior to the current root, which this tool will not do. IPv6 RA Guard stays
+`UNTESTED` when only one router is advertising, for the same reason: proving it
+absent would mean sending a router advertisement.
+
+The `--json` output carries a per-protocol record count alongside `frames_seen`,
+which is how you tell a segment that was genuinely quiet from a capture that
+went wrong.
 
 ## Testing it yourself
 
@@ -165,3 +205,11 @@ delivery, so without a cooperating observer on the target segment they report
 
 Passive checks only report what arrived during the capture window. A segment
 that was quiet for two minutes has not been shown to be free of anything.
+
+On a wireless link you see less than on a switch port, and the difference is not
+the tool. Per-station encryption means another client's unicast traffic never
+reaches you, the access point strips VLAN tags before frames arrive, and it does
+not forward spanning tree or discovery traffic to clients. Many consumer access
+points also suppress or rate-limit multicast, which thins out even the checks
+that should work. A wireless run that finds little is describing the medium as
+much as the network.

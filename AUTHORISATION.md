@@ -17,6 +17,7 @@ These are enforced in code, across the whole run, not per probe:
 | Total frames sent, all probes combined | 600 |
 | Total runtime of the active phase | 10 minutes |
 | MAC addresses introduced by L2A03 | 50 by default, 500 absolute ceiling |
+| Neighbours asked by L2A08 | 25 by default, 50 absolute ceiling |
 | Probes run | only those named in `--tests`, one at a time |
 
 There is no flag that raises any of these and no "run everything" option. If
@@ -127,6 +128,47 @@ not filter injected discovery traffic.
 this frame ages out 30 seconds after the probe finishes, and no switch changes
 its forwarding behaviour because of one.
 
+### L2A08, client isolation
+
+**Sends** up to 25 ARP requests, one to each of the first 25 addresses in the
+local subnet, at five per second. The ceiling is 50 and it refuses to run on a
+network larger than a /16.
+
+**If it succeeds** one or more neighbours answer, and the report records that
+stations on this segment can reach each other.
+
+**Why it cannot cause harm** an ARP request is the frame every host sends before
+any conversation on a local network. A laptop joining your Wi-Fi sends more of
+them than this in its first second. The probe never sends a second frame to an
+address that answered, never connects to anything it found, and records only the
+address and MAC of who replied.
+
+### L2A09, UPnP gateway reachability
+
+**Sends** one SSDP M-SEARCH for an internet gateway device, then listens for
+four seconds.
+
+**If it succeeds** the router answers, showing that any host on the segment can
+ask it to open a port through the firewall.
+
+**Why it cannot cause harm** it is the same discovery message a games console or
+media player sends when it starts. The probe never sends the follow-up SOAP
+request that would actually map a port, so nothing is opened. It records which
+addresses answered and nothing else.
+
+## The wireless checks send nothing
+
+L2P15, L2P16 and L2P17 read the access point's advertised security from the
+kernel's cached scan results. No frame is transmitted, no scan is triggered, and
+the interface is not reconfigured. They run in passive mode and need no
+authorisation.
+
+The tool does not use monitor mode, does not send deauthentication frames, does
+not capture handshakes, and does not inject at the radio layer. Monitor mode
+would drop the connection outright. This means the wireless findings describe
+what the access point advertises, not how it behaves under attack, and the
+report says so rather than implying more.
+
 ## What the tool never does
 
 No flag enables any of these, and no code implementing them exists:
@@ -138,6 +180,9 @@ No flag enables any of these, and no code implementing them exists:
 - DHCP pool exhaustion
 - Capturing, storing or writing to disk the payload of any frame not addressed
   to or from the tool's own interface
+- Monitor mode, deauthentication, handshake capture, or radio injection
+- Sending an IPv6 router advertisement, which would reconfigure every host that
+  believed it
 
 The passive listener records protocol metadata only. It never writes a frame to
 a pcap or a log. Where a first hop redundancy protocol carries an
