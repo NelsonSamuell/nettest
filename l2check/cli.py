@@ -121,6 +121,7 @@ def run_probe(args) -> int:
         target_vlan=args.target_vlan,
         observer=args.observer,
         local_cidr=listen.interface_cidr(args.interface) or None,
+        gateway=listen.default_gateway(args.interface) or None,
     )
     session.authorise(authorisation, tests)
     for result in probes.run_selected(session, capture):

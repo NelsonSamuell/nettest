@@ -278,3 +278,96 @@ def test_the_new_probes_are_still_behind_the_gate():
     session.local_cidr = "192.168.1.10/24"
     with pytest.raises(NotAuthorised):
         segment.run_upnp(session, Capture())
+
+
+# L2A10 reaches the network over TCP rather than a raw socket, so the caps have
+# to cover that path too.
+
+def test_a_connection_is_refused_before_the_gate_passes():
+    tried = []
+    session = ActiveSession(
+        interface="wlan0",
+        gateway="192.168.1.1",
+        connector=lambda a, p, t: tried.append((a, p)) or True,
+    )
+    with pytest.raises(NotAuthorised):
+        session.connect("192.168.1.1", 80)
+    assert tried == []
+
+
+def test_connections_are_charged_against_the_frame_budget(gated):
+    from l2check.authorisation import CONNECT_FRAME_COST
+
+    session, _ = gated
+    session.connector = lambda a, p, t: True
+    session.connect("192.168.1.1", 80)
+    assert session.frames_sent == CONNECT_FRAME_COST
+    session.connect("192.168.1.1", 443)
+    assert session.frames_sent == 2 * CONNECT_FRAME_COST
+
+
+def test_the_frame_cap_stops_connections_too(gated):
+    session, _ = gated
+    session.connector = lambda a, p, t: True
+    session.frame_cap = 4
+    session.connect("192.168.1.1", 80)
+    with pytest.raises(CapExceeded):
+        session.connect("192.168.1.1", 443)
+
+
+def test_an_unexpected_link_change_stops_connections(gated):
+    session, _ = gated
+    session.connector = lambda a, p, t: True
+    session._baseline_link = "up"
+    with pytest.raises(LinkStateChanged):
+        session.connect("192.168.1.1", 80)
+
+
+def test_gateway_probe_reports_only_its_own_spend(gated):
+    from l2check.probes import segment
+
+    session, _ = gated
+    session.gateway = "192.168.1.1"
+    session.connector = lambda a, p, t: p == 23
+    session.frames_sent = 90
+    result = segment.run_gateway_admin(session, Capture())
+    assert result.state == "ABSENT"
+    assert result.frames_sent == session.frames_sent - 90
+
+
+def test_gateway_probe_stops_when_the_budget_runs_out(gated):
+    from l2check.authorisation import CONNECT_FRAME_COST
+    from l2check.probes import segment
+
+    session, _ = gated
+    session.gateway = "192.168.1.1"
+    session.connector = lambda a, p, t: True
+    session.frame_cap = 2 * CONNECT_FRAME_COST
+    result = segment.run_gateway_admin(session, Capture())
+    assert session.frames_sent <= session.frame_cap
+    assert result.frames_sent == 2 * CONNECT_FRAME_COST
+
+
+def test_gateway_probe_refuses_without_a_gateway(gated):
+    from l2check.probes import segment
+
+    session, _ = gated
+    session.gateway = None
+    session.connector = lambda a, p, t: pytest.fail("must not connect")
+    assert segment.run_gateway_admin(session, Capture()).state == "UNTESTED"
+
+
+def test_no_probe_opens_its_own_socket():
+    """Probes must reach the network through the session, never directly."""
+    for path in PROBES_DIR.glob("*.py"):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                names = {alias.name.split(".")[0] for alias in node.names}
+                assert "socket" not in names, "%s imports socket directly" % path
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr in {"connect", "connect_ex", "create_connection"}:
+                    assert isinstance(node.func.value, ast.Name), str(path)
+                    assert node.func.value.id == "session", (
+                        "%s connects outside the session" % path
+                    )

@@ -18,6 +18,7 @@ These are enforced in code, across the whole run, not per probe:
 | Total runtime of the active phase | 10 minutes |
 | MAC addresses introduced by L2A03 | 50 by default, 500 absolute ceiling |
 | Neighbours asked by L2A08 | 25 by default, 50 absolute ceiling |
+| TCP connections | charged as 3 frames each against the same 600 |
 | Probes run | only those named in `--tests`, one at a time |
 
 There is no flag that raises any of these and no "run everything" option. If
@@ -155,6 +156,24 @@ ask it to open a port through the firewall.
 media player sends when it starts. The probe never sends the follow-up SOAP
 request that would actually map a port, so nothing is opened. It records which
 addresses answered and nothing else.
+
+### L2A10, gateway management exposure
+
+**Sends** one TCP connection to each of five management ports on the default
+gateway: 23, 21, 80, 8080 and 443. Each is closed the instant it is accepted.
+
+**If it succeeds** the gateway answers on a cleartext management port, and the
+report records which.
+
+**Why it cannot cause harm** the probe completes a TCP handshake and closes it.
+It sends no request, offers no credentials, reads no banner and fetches no page.
+Five connections is fewer than a browser opens loading one page, and the finding
+is established by the handshake alone: a device either answers on port 23 or it
+does not. Nothing is authenticated to and nothing is changed.
+
+Connections are charged against the same 600 frame budget as raw sends, at three
+frames each, so this probe cannot reach the network through a path the caps do
+not count.
 
 ## The wireless checks send nothing
 

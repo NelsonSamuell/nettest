@@ -73,6 +73,7 @@ def registry() -> dict[str, Callable[[ActiveSession, Capture], ProbeResult]]:
         "L2A07": trunking.run_discovery_injection,
         "L2A08": segment.run_client_isolation,
         "L2A09": segment.run_upnp,
+        "L2A10": segment.run_gateway_admin,
     }
 
 

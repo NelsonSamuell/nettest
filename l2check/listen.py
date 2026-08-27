@@ -44,6 +44,21 @@ def interface_cidr(interface: str) -> str:
     return "%s/24" % address
 
 
+def default_gateway(interface: str) -> str:
+    """Return the interface's default gateway address, or an empty string."""
+    path = Path("/proc/net/route")
+    if not path.exists():
+        return ""
+    for line in path.read_text().splitlines()[1:]:
+        fields = line.split()
+        # Destination 00000000 is the default route; the gateway is little endian.
+        if len(fields) < 3 or fields[0] != interface or fields[1] != "00000000":
+            continue
+        packed = int(fields[2], 16).to_bytes(4, "little")
+        return ".".join(str(octet) for octet in packed)
+    return ""
+
+
 def capture(
     interface: str,
     duration: int = DEFAULT_DURATION,

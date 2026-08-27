@@ -37,6 +37,7 @@ MGMT_ENCRYPTION = "Management plane encryption"
 RA_GUARD = "IPv6 RA Guard"
 CLIENT_ISOLATION = "Client isolation"
 UPNP_DISABLED = "UPnP IGD disabled"
+GATEWAY_ADMIN = "Gateway management encrypted"
 
 LINK_ENCRYPTION = "Link encryption"
 PMF = "Protected Management Frames"
@@ -54,6 +55,7 @@ COMMON_CONTROLS = (
     RA_GUARD,
     CLIENT_ISOLATION,
     UPNP_DISABLED,
+    GATEWAY_ADMIN,
 )
 
 # Controls that only exist on a switch port.

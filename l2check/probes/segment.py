@@ -1,13 +1,15 @@
-"""L2A08 client isolation and L2A09 UPnP reachability.
+"""L2A08 client isolation, L2A09 UPnP reachability, L2A10 gateway management.
 
 Both probes are ordinary requests that any host on a network makes constantly.
 L2A08 asks a bounded number of neighbours whether they are there, using the same
 ARP request a host sends before any conversation. L2A09 sends the one SSDP
 search a media player sends at startup.
 
-Neither changes anything. L2A08 asks at most 25 addresses at five per second,
-which is a fraction of what a laptop does when it joins a network, and it never
-sends a second frame to an address that answered.
+None of them changes anything. L2A08 asks at most 25 addresses at five per
+second, which is a fraction of what a laptop does when it joins a network, and
+it never sends a second frame to an address that answered. L2A10 opens and
+immediately closes one TCP connection per management port, which is what a
+browser does before a page loads.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from scapy.layers.inet import IP, UDP
 from scapy.layers.l2 import ARP, Ether
 
 from l2check import frames, posture
-from l2check.authorisation import ActiveSession
+from l2check.authorisation import CONNECT_FRAME_COST, ActiveSession
 from l2check.models import Capture
 from l2check.posture import ABSENT, INDETERMINATE, PRESENT, UNTESTED, ProbeResult
 from l2check.probes import listen_after_send
@@ -30,6 +32,16 @@ LISTEN_SECONDS = 4
 SSDP_GROUP = "239.255.255.250"
 SSDP_PORT = 1900
 SEARCH_TARGET = "urn:schemas-upnp-org:device:InternetGatewayDevice:1"
+
+# Management ports worth asking about, and whether reaching one is acceptable.
+ADMIN_PORTS = (
+    (23, "Telnet", False),
+    (21, "FTP", False),
+    (80, "HTTP", False),
+    (8080, "HTTP alt", False),
+    (443, "HTTPS", True),
+)
+CONNECT_TIMEOUT = 2.0
 
 
 def _refused(check: str, control: str, detail: str) -> ProbeResult:
@@ -164,4 +176,64 @@ def run_upnp(session: ActiveSession, capture: Capture) -> ProbeResult:
         "have UPnP off, or may simply not answer this search target"
         % LISTEN_SECONDS,
         frames_sent=1,
+    )
+
+
+def run_gateway_admin(session: ActiveSession, capture: Capture) -> ProbeResult:
+    """L2A10. Ask the gateway which management ports accept a connection.
+
+    One TCP connect per port, closed the instant it is accepted. Nothing is
+    requested, no credentials are offered, no banner is read and no page is
+    fetched: the finding is that a cleartext management port answers at all, and
+    that is established by the handshake alone. A connect and close is the most
+    ordinary thing that happens on a network.
+    """
+    if not session.gateway:
+        return _refused(
+            "L2A10",
+            posture.GATEWAY_ADMIN,
+            "no default gateway on this interface, so there is nothing to ask",
+        )
+
+    before = session.frames_sent
+    reachable: list[str] = []
+    cleartext: list[str] = []
+    for port, name, encrypted in ADMIN_PORTS:
+        if session.frames_remaining < CONNECT_FRAME_COST:
+            break
+        if not session.connect(session.gateway, port, timeout=CONNECT_TIMEOUT):
+            continue
+        reachable.append("%s/%d" % (name, port))
+        if not encrypted:
+            cleartext.append("%s/%d" % (name, port))
+
+    spent = session.frames_sent - before
+    if cleartext:
+        return ProbeResult(
+            "L2A10",
+            posture.GATEWAY_ADMIN,
+            ABSENT,
+            "L2A10 active probe",
+            "the gateway %s accepts cleartext management on %s"
+            % (session.gateway, ", ".join(cleartext)),
+            frames_sent=spent,
+        )
+    if reachable:
+        return ProbeResult(
+            "L2A10",
+            posture.GATEWAY_ADMIN,
+            PRESENT,
+            "L2A10 active probe",
+            "the gateway %s answered only on %s"
+            % (session.gateway, ", ".join(reachable)),
+            frames_sent=spent,
+        )
+    return ProbeResult(
+        "L2A10",
+        posture.GATEWAY_ADMIN,
+        INDETERMINATE,
+        "L2A10 active probe",
+        "the gateway %s accepted no connection on the ports asked; management "
+        "may be on another port or restricted to another network" % session.gateway,
+        frames_sent=spent,
     )

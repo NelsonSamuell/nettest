@@ -25,6 +25,7 @@ The caps are enforced in code, across the whole run:
 | Total active runtime | 10 minutes |
 | MAC addresses introduced by L2A03 | 50 by default, 500 ceiling |
 | Neighbours asked by L2A08 | 25 by default, 50 ceiling |
+| TCP connections, charged as 3 frames each | the same 600 frame budget |
 | Probes run | only those named in `--tests` |
 
 No flag raises any of them, and there is no option to run every probe at once.
@@ -139,6 +140,7 @@ or authorisation error.
 | L2A07 | Discovery protocol injection | active | 1 |
 | L2A08 | Client isolation | active | up to 25 |
 | L2A09 | UPnP gateway reachability | active | 1 |
+| L2A10 | Gateway management exposure | active | 3 per port, 5 ports |
 
 L2A05 and L2A06 need a cooperating listener on the target segment, started with
 `l2check observe` and named with `--observer HOST:PORT`.
@@ -165,7 +167,9 @@ absent would mean sending a router advertisement.
 
 The `--json` output carries a per-protocol record count alongside `frames_seen`,
 which is how you tell a segment that was genuinely quiet from a capture that
-went wrong.
+went wrong. It also reports `parse_errors`, and `truncated` names any check that
+hit the per-check record cap, so a capped result is never mistaken for a
+complete one.
 
 ## Testing it yourself
 

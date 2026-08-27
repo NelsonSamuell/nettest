@@ -9,6 +9,7 @@ own ceiling: a probe can only ask the session to send, and the session counts.
 from __future__ import annotations
 
 import hashlib
+import socket
 import time
 from dataclasses import dataclass, field
 from datetime import date
@@ -39,6 +40,7 @@ ACTIVE_CHECKS = (
     "L2A07",
     "L2A08",
     "L2A09",
+    "L2A10",
 )
 
 # Global caps for one active run. These are ceilings across every probe
@@ -47,6 +49,11 @@ TOTAL_FRAME_CAP = 600
 TOTAL_RUNTIME_CAP = 600
 MAX_MACS_CAP = 500
 DEFAULT_MAX_MACS = 50
+
+# One TCP connect and close is a SYN, an ACK and a RST on the wire. Connections
+# are charged against the same frame budget as raw sends so that no probe can
+# reach the network through a path the caps do not count.
+CONNECT_FRAME_COST = 3
 
 
 class AuthorisationError(Exception):
@@ -215,6 +222,18 @@ def _send_frame(interface: str, frame: bytes) -> None:
     sendp(frame, iface=interface, verbose=False)
 
 
+def _tcp_connect(address: str, port: int, timeout: float) -> bool:
+    """Open and immediately close one TCP connection. True when it was accepted."""
+    connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    connection.settimeout(timeout)
+    try:
+        return connection.connect_ex((address, port)) == 0
+    except OSError:
+        return False
+    finally:
+        connection.close()
+
+
 @dataclass
 class ActiveSession:
     """The only route from a probe to the wire.
@@ -231,10 +250,12 @@ class ActiveSession:
     test_ip: str | None = None
     target_vlan: int | None = None
     local_cidr: str | None = None
+    gateway: str | None = None
     observer: str | None = None
     frame_cap: int = TOTAL_FRAME_CAP
     runtime_cap: int = TOTAL_RUNTIME_CAP
     sender: Callable[[str, bytes], None] = _send_frame
+    connector: Callable[[str, int, float], bool] = _tcp_connect
     clock: Callable[[], float] = time.monotonic
     frames_sent: int = 0
     authorised: bool = False
@@ -279,6 +300,28 @@ class ActiveSession:
                 "interface %s went from %s to %s"
                 % (self.interface, self._baseline_link, current)
             )
+
+    def connect(self, address: str, port: int, timeout: float = 2.0) -> bool:
+        """Open and close one TCP connection, counted against the global caps.
+
+        This exists so that a probe needing a transport level answer still goes
+        through the session. A probe has no other way to reach the network, and
+        the gate, the frame budget and the runtime cap all apply here exactly as
+        they do to a raw send.
+        """
+        if not self.authorised:
+            raise NotAuthorised(
+                "the authorisation gate has not passed, so no connection may be made"
+            )
+        self.check_runtime()
+        self.check_link()
+        if self.frames_sent + CONNECT_FRAME_COST > self.frame_cap:
+            raise CapExceeded(
+                "total frame cap of %d reached after %d frames"
+                % (self.frame_cap, self.frames_sent)
+            )
+        self.frames_sent += CONNECT_FRAME_COST
+        return self.connector(address, port, timeout)
 
     def send(self, frames: bytes | Iterable[bytes]) -> int:
         """Transmit one or more frames, counting them against the global cap."""
