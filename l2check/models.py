@@ -7,7 +7,13 @@ which is the constraint the passive listener is built around.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import astuple, dataclass, field
+
+# A busy segment can produce millions of frames in a capture window. Records are
+# deduplicated on their own contents and then capped, because every finding is
+# built from the distinct facts observed, never from how many times each
+# recurred. Without this a capture on a trunk or a SPAN port exhausts memory.
+MAX_RECORDS_PER_CHECK = 2000
 
 HIGH = "HIGH"
 MEDIUM = "MEDIUM"
@@ -160,6 +166,30 @@ class Capture:
     peer_traffic: list[PeerTrafficRecord] = field(default_factory=list)
     wireless: object | None = None
     local_macs: set = field(default_factory=set)
+
+    # Counters that must survive deduplication.
+    gratuitous_arps: int = 0
+    parse_errors: int = 0
+    truncated: set = field(default_factory=set)
+    _seen: set = field(default_factory=set, repr=False)
+
+    def add(self, name: str, record) -> bool:
+        """Store a record unless it duplicates one already held or the cap is hit.
+
+        Returns True when the record was stored. Records are keyed on their own
+        field values, so a protocol that repeats every two seconds contributes
+        one entry rather than sixty.
+        """
+        sink = getattr(self, name)
+        key = (name,) + astuple(record)
+        if key in self._seen:
+            return False
+        if len(sink) >= MAX_RECORDS_PER_CHECK:
+            self.truncated.add(name)
+            return False
+        self._seen.add(key)
+        sink.append(record)
+        return True
 
     def observed_root_priority(self) -> int | None:
         """Return the best root priority seen, or None if no BPDU was observed."""

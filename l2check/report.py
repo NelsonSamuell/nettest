@@ -89,6 +89,9 @@ def to_dict(
             "interface": capture.interface,
             "duration": capture.duration,
             "frames_seen": capture.frames_seen,
+            "parse_errors": capture.parse_errors,
+            "truncated": sorted(capture.truncated),
+            "gratuitous_arps": capture.gratuitous_arps,
             "records": {
                 "discovery": len(capture.discovery),
                 "dtp": len(capture.dtp),

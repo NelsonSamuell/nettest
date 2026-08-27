@@ -379,3 +379,77 @@ def test_parse_frame_records_the_new_checks(tmp_path):
     assert len(capture.router_advert_sources()) == 2
     assert len(capture.upnp) == 1
     assert len(capture.peer_traffic) == 1
+
+
+# Robustness: a real segment produces frames scapy cannot dissect, and a busy
+# one produces more records than memory will hold.
+
+class Unparseable:
+    """Stands in for a truncated or malformed frame that makes a parser raise."""
+
+    payload = None
+
+    def __contains__(self, other):
+        raise ValueError("malformed frame")
+
+    def __getitem__(self, key):
+        raise ValueError("malformed frame")
+
+    def getlayer(self, cls):
+        raise ValueError("malformed frame")
+
+    @property
+    def src(self):
+        raise ValueError("malformed frame")
+
+
+def test_a_malformed_frame_does_not_abort_the_capture():
+    capture = Capture()
+    parse.parse_frame(Unparseable(), capture)
+    assert capture.frames_seen == 1
+    assert capture.parse_errors > 0
+    assert capture.arp == []
+
+
+def test_the_capture_keeps_going_after_a_bad_frame(tmp_path):
+    capture = Capture()
+    good = one(tmp_path, llmnr_query("fileserver", "00:11:22:33:44:77"))
+    parse.parse_frame(Unparseable(), capture)
+    parse.parse_frame(good, capture)
+    parse.parse_frame(Unparseable(), capture)
+    assert capture.frames_seen == 3
+    assert len(capture.name_resolution) == 1
+
+
+def test_repeated_records_are_deduplicated(tmp_path):
+    capture = Capture()
+    packet = one(tmp_path, llmnr_query("fileserver", "00:11:22:33:44:77"))
+    for _ in range(200):
+        parse.parse_frame(packet, capture)
+    assert capture.frames_seen == 200
+    assert len(capture.name_resolution) == 1
+
+
+def test_gratuitous_arps_are_counted_even_though_records_are_deduplicated(tmp_path):
+    capture = Capture()
+    raw = frames.gratuitous_arp("aa:bb:cc:dd:ee:01", "10.0.0.5")
+    packet = one(tmp_path, Ether(raw))
+    for _ in range(500):
+        parse.parse_frame(packet, capture)
+    assert len(capture.arp) == 1
+    assert capture.gratuitous_arps == 500
+
+
+def test_peer_traffic_is_bounded_on_a_busy_segment(tmp_path):
+    from l2check.models import MAX_RECORDS_PER_CHECK
+
+    capture = Capture()
+    capture.local_macs.add("cc:cc:cc:cc:cc:cc")
+    for index in range(MAX_RECORDS_PER_CHECK + 100):
+        packet = Ether(
+            src="aa:bb:cc:%02x:%02x:00" % (index // 256, index % 256),
+            dst="ba:bb:cc:dd:ee:02",
+        ) / IP() / TCP()
+        parse.parse_frame(Ether(bytes(packet)), capture)
+    assert len(capture.peer_traffic) == MAX_RECORDS_PER_CHECK
+    assert "peer_traffic" in capture.truncated

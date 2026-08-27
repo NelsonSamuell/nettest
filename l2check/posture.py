@@ -463,7 +463,6 @@ def findings(capture: Capture) -> list[Finding]:
             )
         )
 
-    gratuitous = [r for r in capture.arp if r.gratuitous]
     conflicts = _arp_conflicts(capture)
     if conflicts:
         results.append(
@@ -476,9 +475,13 @@ def findings(capture: Capture) -> list[Finding]:
                 ),
             )
         )
-    elif gratuitous:
+    elif capture.gratuitous_arps:
         results.append(
-            Finding(MEDIUM, "L2P08", "%d gratuitous ARPs observed" % len(gratuitous))
+            Finding(
+                MEDIUM,
+                "L2P08",
+                "%d gratuitous ARPs observed" % capture.gratuitous_arps,
+            )
         )
 
     by_protocol: dict[str, set[str]] = {}

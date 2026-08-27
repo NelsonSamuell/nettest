@@ -379,27 +379,48 @@ def parse_cleartext(pkt: Packet) -> CleartextRecord | None:
     return None
 
 
+PARSERS = (
+    (parse_cdp, "discovery"),
+    (parse_lldp, "discovery"),
+    (parse_dtp, "dtp"),
+    (parse_bpdu, "bpdu"),
+    (parse_vtp, "vtp"),
+    (parse_dhcp_server, "dhcp_servers"),
+    (parse_arp, "arp"),
+    (parse_name_resolution, "name_resolution"),
+    (parse_fhrp, "fhrp"),
+    (parse_cleartext, "cleartext"),
+    (parse_router_advert, "router_adverts"),
+    (parse_upnp, "upnp"),
+)
+
+
 def parse_frame(pkt: Packet, capture: Capture) -> None:
-    """Dispatch one packet into the capture's metadata records."""
+    """Dispatch one packet into the capture's metadata records.
+
+    Every parser is guarded. A truncated or malformed frame is routine on a real
+    segment, and this runs inside the sniffer's callback: an exception escaping
+    here would abort the whole capture and lose the run. A frame that cannot be
+    parsed is counted and skipped instead.
+    """
     capture.frames_seen += 1
-    for parser, sink in (
-        (parse_cdp, capture.discovery),
-        (parse_lldp, capture.discovery),
-        (parse_dtp, capture.dtp),
-        (parse_bpdu, capture.bpdu),
-        (parse_vtp, capture.vtp),
-        (parse_dhcp_server, capture.dhcp_servers),
-        (parse_arp, capture.arp),
-        (parse_name_resolution, capture.name_resolution),
-        (parse_fhrp, capture.fhrp),
-        (parse_cleartext, capture.cleartext),
-        (parse_router_advert, capture.router_adverts),
-        (parse_upnp, capture.upnp),
-    ):
-        record = parser(pkt)
+    for parser, name in PARSERS:
+        try:
+            record = parser(pkt)
+        except Exception:
+            capture.parse_errors += 1
+            continue
         if record is not None:
-            sink.append(record)
-    capture.tagged.extend(parse_tagged(pkt))
-    peer = parse_peer_traffic(pkt, capture.local_macs)
+            if name == "arp" and record.gratuitous:
+                capture.gratuitous_arps += 1
+            capture.add(name, record)
+
+    try:
+        for tag in parse_tagged(pkt):
+            capture.add("tagged", tag)
+        peer = parse_peer_traffic(pkt, capture.local_macs)
+    except Exception:
+        capture.parse_errors += 1
+        return
     if peer is not None:
-        capture.peer_traffic.append(peer)
+        capture.add("peer_traffic", peer)
