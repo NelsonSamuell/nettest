@@ -227,6 +227,7 @@ class ActiveSession:
     tests: list[str] = field(default_factory=list)
     max_macs: int = DEFAULT_MAX_MACS
     test_ip: str | None = None
+    target_vlan: int | None = None
     observer: str | None = None
     frame_cap: int = TOTAL_FRAME_CAP
     runtime_cap: int = TOTAL_RUNTIME_CAP
