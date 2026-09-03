@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "updated": "",
+  "source": "",
+  "note": "Optional. Maps a lower case MAC prefix such as '00:00:5e' to a vendor name. Ships empty because inventing vendor assignments would put wrong names in the report. With no entry, the device inventory reports whether the address is a real vendor assignment or a locally assigned one, which is computed from the address itself and is always correct.",
+  "prefixes": {}
+}

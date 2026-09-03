@@ -12,7 +12,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from l2check import wireless
-from l2check.models import HIGH, MEDIUM, Capture, Finding
+from l2check.models import HIGH, LOW, MEDIUM, Capture, Finding
 
 PRESENT = "PRESENT"
 ABSENT = "ABSENT"
@@ -656,8 +656,11 @@ def profile_for(capture: Capture) -> str:
     return WIRED
 
 
-def from_capture(capture: Capture, profile: str | None = None) -> tuple[Posture, list[Finding]]:
+def from_capture(
+    capture: Capture, profile: str | None = None, targets=None
+) -> tuple[Posture, list[Finding]]:
     """Build the posture and findings a passive capture supports."""
+    from l2check.l3.correlate import correlate, correlation_findings
     from l2check.l3.findings import apply_passive_l3, findings_l3
 
     posture = Posture.new(profile or profile_for(capture))
@@ -665,8 +668,12 @@ def from_capture(capture: Capture, profile: str | None = None) -> tuple[Posture,
     apply_wireless(posture, capture.wireless)
     apply_passive_l3(posture, capture)
 
-    order = {HIGH: 0, MEDIUM: 1}
-    combined = findings(capture) + findings_l3(capture)
-    return posture, sorted(
-        combined, key=lambda f: (order.get(f.severity, 2), f.check)
+    # Correlation runs last, because it reads the posture it comments on.
+    devices = correlate(capture, targets)
+    combined = (
+        findings(capture)
+        + findings_l3(capture)
+        + correlation_findings(devices, posture, capture)
     )
+    order = {HIGH: 0, MEDIUM: 1, LOW: 2}
+    return posture, sorted(combined, key=lambda f: (order.get(f.severity, 3), f.check))

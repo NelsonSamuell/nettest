@@ -80,15 +80,18 @@ def test_l3p09_joins_arp_records_as_well_as_host_records():
     assert "L3P09" in checks(l3f.findings_l3(capture))
 
 
-def test_one_mac_in_two_subnets_is_reported():
+def test_one_mac_in_two_subnets_is_reported_once_by_the_correlation_layer():
+    """COR01 owns this. L3P01 reporting it too would double-count."""
     capture = Capture(
         hosts=[
             HostRecord("aa:bb:cc:dd:ee:01", "192.168.1.5", 4, "traffic"),
             HostRecord("aa:bb:cc:dd:ee:01", "192.168.2.5", 4, "traffic"),
         ]
     )
-    results = [f for f in l3f.findings_l3(capture) if f.check == "L3P01"]
-    assert any("more than one subnet" in f.title for f in results)
+    _, results = posture.from_capture(capture, profile=posture.WIRED)
+    subnet_findings = [f for f in results if "subnet" in f.title]
+    assert len(subnet_findings) == 1
+    assert subnet_findings[0].check == "COR01"
 
 
 def test_cleartext_is_not_double_counted_between_the_layers():

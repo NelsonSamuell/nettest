@@ -88,7 +88,8 @@ def reachability_matrix(matrix: dict | None) -> str:
     if not matrix:
         return "REACHABILITY\n  no segment pairs tested"
     segments = sorted({name for pair in matrix for name in pair})
-    width = max(len(name) for name in segments) + 2
+    # Cell values are wider than most segment names, so size on both.
+    width = max([len(name) for name in segments] + [len(str(v)) for v in matrix.values()]) + 2
     header = "".ljust(width) + "".join(name.ljust(width) for name in segments)
     lines = ["REACHABILITY", header]
     for source in segments:
@@ -253,6 +254,8 @@ def to_dict(
     targets=None,
     budget=None,
     frames_sent: int = 0,
+    devices=None,
+    matrix=None,
 ) -> dict:
     """Build the JSON form of a run."""
     document: dict = {
@@ -264,6 +267,14 @@ def to_dict(
         "summary": posture.counts(),
         "frames_sent": frames_sent,
     }
+    if devices is not None:
+        document["devices"] = [
+            d.as_dict() if hasattr(d, "as_dict") else d for d in devices
+        ]
+    if matrix is not None:
+        document["reachability"] = {
+            "%s>%s" % pair: state for pair, state in sorted(matrix.items())
+        }
     if budget is not None:
         document["budget"] = budget.as_dict()
     if capture is not None:

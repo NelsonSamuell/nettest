@@ -3,7 +3,8 @@
 L3P02 records cleartext transport metadata but emits no finding of its own: the
 same fact is already reported by L2P11, and the two overlap by design. The layer
 3 contribution is the endpoint detail carried in the records, not a second row
-in the findings table.
+in the findings table. For the same reason "one MAC in several subnets" is
+reported once, by the correlation layer as COR01, rather than here as well.
 
 Passive evidence can move a control to ABSENT or INDETERMINATE and never to
 PRESENT, for the same reason it cannot at layer 2: not seeing something is not
@@ -82,26 +83,6 @@ def findings_l3(capture: Capture) -> list[Finding]:
                     "%s by %s" % (ip, " and ".join(sorted(macs)))
                     for ip, macs in sorted(conflicts.items())
                 ),
-            )
-        )
-
-    subnets_per_mac: dict[str, set[str]] = {}
-    for record in capture.hosts:
-        if record.family != 4:
-            continue
-        subnets_per_mac.setdefault(record.mac, set()).add(record.ip.rsplit(".", 1)[0])
-    straddling = {mac: nets for mac, nets in subnets_per_mac.items() if len(nets) > 1}
-    if straddling:
-        results.append(
-            Finding(
-                MEDIUM,
-                "L3P01",
-                "One MAC holding addresses in more than one subnet: "
-                + ", ".join(
-                    "%s in %s" % (mac, ", ".join(sorted(nets)))
-                    for mac, nets in sorted(straddling.items())
-                )
-                + ". A router, a bridge, or a segmentation failure",
             )
         )
 
@@ -212,9 +193,15 @@ def findings_l3(capture: Capture) -> list[Finding]:
             Finding(
                 LOW,
                 "L3P07",
-                "%d internal hosts contacted external addresses; the widest "
-                "profile is %s with %d destinations"
-                % (len(talkers), busiest[0], len(busiest[1])),
+                "%d internal host%s contacted external addresses; the widest "
+                "profile is %s with %d destination%s"
+                % (
+                    len(talkers),
+                    "" if len(talkers) == 1 else "s",
+                    busiest[0],
+                    len(busiest[1]),
+                    "" if len(busiest[1]) == 1 else "s",
+                ),
             )
         )
 

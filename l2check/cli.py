@@ -52,6 +52,7 @@ def build_parser(prog: str = "netcheck") -> argparse.ArgumentParser:
     listener.add_argument("--duration", type=int, default=listen.DEFAULT_DURATION)
     listener.add_argument("--json", action="store_true", help="print JSON instead of a table")
     listener.add_argument("--out", help="write the JSON report to this path")
+    listener.add_argument("--config", help="targets file, default ./netcheck.yaml")
     listener.add_argument(
         "--profile",
         choices=("auto", posture.WIRED, posture.WIRELESS),
@@ -134,7 +135,15 @@ def resolve_interface(args) -> str:
     return chosen
 
 
-def _emit(document: dict, board: posture.Posture, findings: list, args, host=None) -> None:
+def _emit(
+    document: dict,
+    board: posture.Posture,
+    findings: list,
+    args,
+    host=None,
+    matrix=None,
+    devices=None,
+) -> None:
     if getattr(args, "out", None):
         Path(args.out).write_text(report.to_json(document) + "\n")
     if getattr(args, "markdown", None):
@@ -148,6 +157,8 @@ def _emit(document: dict, board: posture.Posture, findings: list, args, host=Non
                 findings,
                 layers=getattr(args, "layers", "both"),
                 host=host,
+                matrix=matrix,
+                devices=devices,
             )
         )
 
@@ -158,15 +169,25 @@ def _profile(args) -> str | None:
 
 
 def run_listen(args) -> int:
+    from l2check.l3.correlate import correlate, reachability
+
     args.interface = resolve_interface(args)
+    config = targets_module.load(getattr(args, "config", None), args.interface)
     capture = listen.capture(args.interface, args.duration)
-    board, findings = posture.from_capture(capture, profile=_profile(args))
+    board, findings = posture.from_capture(capture, profile=_profile(args), targets=config)
+    devices = correlate(capture, config)
+    matrix = reachability(capture, None, config)
     _emit(
-        report.to_dict(board, findings, capture=capture),
+        report.to_dict(
+            board, findings, capture=capture, targets=config,
+            devices=devices, matrix=matrix,
+        ),
         board,
         findings,
         args,
         host=capture.host_posture,
+        matrix=matrix,
+        devices=[d.as_dict() for d in devices],
     )
     return board.exit_code()
 
@@ -194,7 +215,7 @@ def run_probe(args) -> int:
     # The passive capture happens before anything is sent: L2A02 cannot pick a
     # losing bridge priority without a root priority observed from this port.
     capture = listen.capture(args.interface, args.duration)
-    board, findings = posture.from_capture(capture, profile=_profile(args))
+    board, findings = posture.from_capture(capture, profile=_profile(args), targets=config)
 
     budget = Budget(
         frames=args.frame_budget or config.limits.frame_budget,
@@ -214,8 +235,16 @@ def run_probe(args) -> int:
         gateway=config.gateway or None,
     )
     session.start(tests)
-    for result in probes.run_selected(session, capture):
+    results = probes.run_selected(session, capture)
+    for result in results:
         board.apply(result)
+
+    # Correlation runs after every check and before the report.
+    from l2check.l3.correlate import correlate, correlation_findings, reachability
+
+    devices = correlate(capture, config)
+    findings = findings + correlation_findings(devices, board, capture)
+    matrix = reachability(capture, results, config)
 
     document = report.to_dict(
         board,
@@ -224,8 +253,14 @@ def run_probe(args) -> int:
         targets=config,
         budget=budget,
         frames_sent=session.frames_sent,
+        devices=devices,
+        matrix=matrix,
     )
-    _emit(document, board, findings, args, host=capture.host_posture)
+    _emit(
+        document, board, findings, args,
+        host=capture.host_posture, matrix=matrix,
+        devices=[d.as_dict() for d in devices],
+    )
     return board.exit_code()
 
 
