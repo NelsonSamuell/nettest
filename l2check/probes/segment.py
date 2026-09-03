@@ -20,7 +20,7 @@ from scapy.layers.inet import IP, UDP
 from scapy.layers.l2 import ARP, Ether
 
 from l2check import frames, posture
-from l2check.authorisation import CONNECT_FRAME_COST, ActiveSession
+from l2check.session import CONNECT_FRAME_COST, ActiveSession
 from l2check.models import Capture
 from l2check.posture import ABSENT, INDETERMINATE, PRESENT, UNTESTED, ProbeResult
 from l2check.probes import listen_after_send

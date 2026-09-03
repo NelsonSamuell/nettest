@@ -416,6 +416,8 @@ def parse_frame(pkt: Packet, capture: Capture) -> None:
             capture.add(name, record)
 
     try:
+        if IP in pkt or IPv6 in pkt:
+            capture.packets_seen += 1
         for tag in parse_tagged(pkt):
             capture.add("tagged", tag)
         peer = parse_peer_traffic(pkt, capture.local_macs)

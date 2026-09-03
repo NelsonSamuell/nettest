@@ -13,7 +13,7 @@ INDETERMINATE, and the probe does not claim a negative.
 from __future__ import annotations
 
 from l2check import frames, posture
-from l2check.authorisation import ActiveSession
+from l2check.session import ActiveSession
 from l2check.models import Capture
 from l2check.observe import ask_observer
 from l2check.posture import ABSENT, INDETERMINATE, PRESENT, UNTESTED, ProbeResult

@@ -7,7 +7,7 @@ sent and never a request, and the ARP announcement is for an address the
 operator has confirmed is unused.
 
 No probe transmits directly. Each one is handed an
-:class:`l2check.authorisation.ActiveSession` and can only ask it to send, which
+:class:`l2check.session.ActiveSession` and can only ask it to send, which
 is where the gate, the total frame cap and the runtime cap are enforced.
 """
 
@@ -18,7 +18,13 @@ from typing import Callable
 
 from scapy.sendrecv import AsyncSniffer
 
-from l2check.authorisation import ACTIVE_CHECKS, ActiveSession, CapExceeded, LinkStateChanged
+from l2check.session import (
+    ACTIVE_CHECKS,
+    BUDGET_EXHAUSTED,
+    ActiveSession,
+    CapExceeded,
+    StateChanged,
+)
 from l2check.models import Capture
 from l2check.posture import ProbeResult
 
@@ -86,12 +92,16 @@ def run_selected(
     probes = registry()
     results: list[ProbeResult] = []
     for check in sorted(session.tests, key=ACTIVE_CHECKS.index):
+        if check not in probes:
+            continue
+        session.current_check = check
         try:
             results.append(probes[check](session, capture))
         except CapExceeded as error:
-            out("stopping: %s" % error)
+            out("stopping: %s (%s)" % (error, BUDGET_EXHAUSTED))
             break
-        except LinkStateChanged as error:
-            out("stopping: %s" % error)
+        except StateChanged as error:
+            out("stopping during %s: %s" % (check, error))
             break
+    session.current_check = None
     return results

@@ -1,4 +1,4 @@
-# l2check
+# netcheck
 
 ## What it does
 
@@ -49,17 +49,66 @@ payload to a pcap or a log.
 
 ## Passive and active
 
-Passive is the default and needs no permission from anyone: it transmits
-nothing, so plugging in and listening is no different from any other host on the
-port. Eleven checks run passively and most real findings come from them.
+Passive is the default. It transmits nothing, needs no configuration file, and
+runs on any interface with no arguments. Most real findings come from it.
 
-Active mode requires `--active` and `--authorisation FILE`, and refuses to run
-without both. The authorisation file names the client, the person who approved
-the test, the segment, and a date window; the tool checks every field, checks
-today is inside the window, requires the segment string to be retyped, and
-records the SHA-256 of the file in the report. There is no override flag for any
-of it. `AUTHORISATION.md` describes each probe in the terms a network manager
-needs to approve it.
+Active checks need `--active` and nothing else. This tool is built for a network
+you own; there is no authorisation file, no date window and no approval prompt.
+That also means it is your job not to point it at a network that is not yours.
+
+A configuration file still exists, but it is a targets file rather than a
+permission slip: which subnets to sweep, where the gateway is, where the
+observers are. Every field defaults from the routing table, so it is optional.
+See "The targets file" below.
+
+## Limits
+
+Limits are defaults, and flags raise them:
+
+| Limit | Default | Flag |
+| --- | --- | --- |
+| Layer 2 frame budget | 600 | `--frame-budget` |
+| Layer 3 packet budget | 5000 | `--packet-budget` |
+| Runtime | 15 minutes | `--runtime` |
+| Send rate | 200 pps | `--rate`, hard capped at 1000 |
+
+The two budgets decrement independently. When one runs out, the checks that
+needed it report `UNTESTED` with reason `budget_exhausted`, never `ABSENT`.
+
+The send rate is the one limit no flag can exceed. Above roughly a thousand
+packets per second consumer gateways start dropping responses selectively, and
+every silence in the report becomes ambiguous. That is an accuracy constraint,
+not a policy one. If you need a faster sweep, use nmap.
+
+A sweep wider than a /24 prints the estimated address count and running time and
+needs `--yes` to proceed. It is a warning, not a refusal.
+
+## The targets file
+
+Default location `./netcheck.yaml`, overridden with `--config`. Optional.
+
+```yaml
+targets:
+  subnets:
+    - 192.168.1.0/24
+  gateway: 192.168.1.1          # default: from the routing table
+  guest_subnet: 192.168.2.0/24  # optional
+
+exclude:
+  - 192.168.1.50                # anything you do not want touched
+
+observers:
+  internal: 192.168.1.20:9001
+  external: vps.example.net:9001
+
+limits:
+  rate_pps: 200
+  packet_budget: 5000
+  runtime_minutes: 15
+```
+
+`exclude` wins over `targets`, so a fragile printer or a work laptop stays out
+of a sweep. The WAN address is excluded by default; `--wan` includes it.
 
 ## Wired and wireless profiles
 
@@ -93,7 +142,7 @@ Run the setup script once:
 ```
 
 It creates a virtual environment in `.venv`, installs l2check into it, grants
-that environment permission to read frames, and links `l2check` into
+that environment permission to read frames, and links `netcheck` and `l2check` into
 `~/.local/bin` so it works from any directory. It asks for `sudo` once, for the
 permission step alone. Running it again is safe and skips whatever is already
 done.
@@ -101,7 +150,7 @@ done.
 Then check it worked:
 
 ```
-l2check doctor
+netcheck doctor
 ```
 
 That prints what is installed, whether l2check may read frames, which interfaces
@@ -112,21 +161,28 @@ After that, `--interface` is optional. With no interface named, l2check uses the
 one carrying your default route:
 
 ```
-l2check listen                       # 120 seconds on your main interface
-l2check listen --duration 30
-l2check listen --interface wlan0 --json --out posture.json
-l2check posture --from posture.json
+netcheck listen                      # 120 seconds on your main interface
+netcheck listen --duration 30
+netcheck listen --interface wlan0 --json --out posture.json
+netcheck posture --from posture.json
+netcheck posture --from posture.json --diff previous.json
+netcheck audit                       # offline checks, sends nothing
 ```
 
 The active side and the cooperating observer:
 
 ```
-l2check probe --interface eth0 --active --authorisation auth.yaml --tests L2A01,L2A04
-l2check observe --interface eth0 --port 9001
+netcheck probe --interface eth0 --active --tests L2A01,L2A04
+netcheck probe --interface eth0 --active --all
+netcheck observe --interface eth0 --port 9001 --side internal
 ```
 
+`l2check` remains as an alias that reports the layer 2 control set only.
+`--layers l2|l3|both` selects which controls appear, and `--markdown PATH`
+writes the report as Markdown alongside the JSON.
+
 Exit codes: 0 when no control is absent, 1 when one or more are, 2 for an input
-or authorisation error.
+or configuration error.
 
 ### Why the setup script, and not setcap on the system python
 
@@ -163,7 +219,7 @@ If you would rather not use the script:
 python3 -m venv --copies --system-site-packages .venv
 .venv/bin/pip install -e .
 sudo setcap cap_net_raw,cap_net_admin+eip .venv/bin/python3
-.venv/bin/l2check doctor
+.venv/bin/netcheck doctor
 ```
 
 ## Checks
@@ -188,7 +244,7 @@ sudo setcap cap_net_raw,cap_net_admin+eip .venv/bin/python3
 | L2P16 | Protected management frames, 802.11w | read-only | 0 |
 | L2P17 | WPS advertised | read-only | 0 |
 
-`l2check doctor` is not a check. It inspects your own machine and sends nothing.
+`netcheck doctor` is not a check. It inspects your own machine and sends nothing.
 | L2A01 | DTP trunk negotiation | active | 1 |
 | L2A02 | BPDU Guard verification | active | 1 |
 | L2A03 | Port security threshold | active | up to 50, ceiling 500 |
@@ -238,7 +294,7 @@ addresses. `--teardown` removes it.
 
 ```
 sudo ./lab/build_lab.sh
-l2check listen --interface l2trunk --duration 30
+netcheck listen --interface l2trunk --duration 30
 sudo ./lab/build_lab.sh --teardown
 ```
 

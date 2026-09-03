@@ -1,7 +1,7 @@
 """Frame builders.
 
 Pure functions. Nothing here opens a socket or touches an interface: the only
-path to the wire is the authorised session in :mod:`l2check.authorisation`,
+path to the wire is :class:`l2check.session.ActiveSession`,
 which is what makes the frame caps unavoidable rather than advisory.
 
 Every builder returns bytes, and every builder is constructed so that the frame

@@ -151,6 +151,7 @@ class Capture:
     interface: str = ""
     duration: int = 0
     frames_seen: int = 0
+    packets_seen: int = 0
     discovery: list[DiscoveryRecord] = field(default_factory=list)
     dtp: list[DtpRecord] = field(default_factory=list)
     bpdu: list[BpduRecord] = field(default_factory=list)

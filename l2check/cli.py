@@ -13,15 +13,17 @@ import sys
 from pathlib import Path
 
 from l2check import doctor, listen, posture, probes, report
-from l2check.authorisation import (
+from l2check.l3 import targets as targets_module
+from l2check.session import (
     ACTIVE_CHECKS,
-    ActiveSession,
-    AuthorisationError,
     DEFAULT_MAX_MACS,
-    confirm_segment,
-    load_authorisation,
+    DEFAULT_RATE_PPS,
+    ActiveSession,
+    Budget,
+    ConfigError,
     parse_tests,
     validate_max_macs,
+    validate_rate,
 )
 from l2check.observe import Observer
 
@@ -40,9 +42,9 @@ NO_INTERFACE_HINT = (
 )
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Return the argument parser for the l2check command."""
-    parser = argparse.ArgumentParser(prog="l2check", description=__doc__.splitlines()[0])
+def build_parser(prog: str = "netcheck") -> argparse.ArgumentParser:
+    """Return the argument parser for the netcheck command."""
+    parser = argparse.ArgumentParser(prog=prog, description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
 
     listener = sub.add_parser("listen", help="passive capture, sends nothing")
@@ -57,16 +59,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="which control set to report; auto follows the interface",
     )
 
-    prober = sub.add_parser("probe", help="active probes, requires written authorisation")
+    prober = sub.add_parser("probe", help="active checks, needs --active")
     prober.add_argument("--interface", help="defaults to the interface with the default route")
     prober.add_argument("--active", action="store_true")
-    prober.add_argument("--authorisation")
-    prober.add_argument("--tests", help="probe identifiers: %s" % ", ".join(ACTIVE_CHECKS))
+    prober.add_argument("--tests", help="check identifiers: %s" % ", ".join(ACTIVE_CHECKS))
+    prober.add_argument("--all", action="store_true", help="run every supported check")
+    prober.add_argument("--config", help="targets file, default ./netcheck.yaml")
+    prober.add_argument("--frame-budget", type=int)
+    prober.add_argument("--packet-budget", type=int)
+    prober.add_argument("--runtime", type=int, metavar="MINUTES")
+    prober.add_argument("--rate", type=int, metavar="PPS", default=DEFAULT_RATE_PPS)
+    prober.add_argument("--yes", action="store_true", help="proceed past a wide sweep warning")
+    prober.add_argument("--wan", action="store_true", help="include the WAN address")
     prober.add_argument("--test-ip")
     prober.add_argument("--target-vlan", type=int, help="inner VLAN for L2A06")
     prober.add_argument("--observer", metavar="HOST:PORT")
     prober.add_argument("--max-macs", type=int, default=DEFAULT_MAX_MACS)
-    prober.add_argument("--confirm-segment")
     prober.add_argument("--duration", type=int, default=listen.DEFAULT_DURATION)
     prober.add_argument("--json", action="store_true")
     prober.add_argument("--out")
@@ -79,11 +87,36 @@ def build_parser() -> argparse.ArgumentParser:
     observer = sub.add_parser("observe", help="cooperating listener for L2A05 and L2A06")
     observer.add_argument("--interface", required=True)
     observer.add_argument("--port", type=int, required=True)
+    observer.add_argument(
+        "--side",
+        choices=("internal", "external"),
+        default="internal",
+        help="which side of the NAT boundary this observer sits on",
+    )
 
     rebuild = sub.add_parser("posture", help="rebuild the table from a saved JSON report")
     rebuild.add_argument("--from", dest="source", required=True)
 
+    auditor = sub.add_parser("audit", help="offline config audit, sends nothing")
+    auditor.add_argument("--config", help="exported router config to parse")
+    auditor.add_argument("--json", action="store_true")
+    auditor.add_argument("--out")
+
     sub.add_parser("doctor", help="check the environment and say what to run next")
+
+    for name in ("listen", "probe", "posture"):
+        sub.choices[name].add_argument(
+            "--layers",
+            choices=("l2", "l3", "both"),
+            default="both",
+            help="which control set to report",
+        )
+        sub.choices[name].add_argument(
+            "--markdown", metavar="PATH", help="also write a Markdown report"
+        )
+    sub.choices["posture"].add_argument(
+        "--diff", metavar="PREVIOUS", help="compare against an earlier saved run"
+    )
 
     return parser
 
@@ -94,15 +127,20 @@ def resolve_interface(args) -> str:
         return args.interface
     chosen = doctor.suggested_interface()
     if not chosen:
-        raise AuthorisationError(NO_INTERFACE_HINT)
+        raise ConfigError(NO_INTERFACE_HINT)
     print("using interface %s" % chosen, file=sys.stderr)
     return chosen
 
 
 def _emit(document: dict, board: posture.Posture, findings: list, args) -> None:
-    if args.out:
+    if getattr(args, "out", None):
         Path(args.out).write_text(report.to_json(document) + "\n")
-    print(report.to_json(document) if args.json else report.render(board, findings))
+    if getattr(args, "markdown", None):
+        Path(args.markdown).write_text(report.to_markdown(document, board, findings))
+    if getattr(args, "json", False):
+        print(report.to_json(document))
+    else:
+        print(report.render(board, findings, layers=getattr(args, "layers", "both")))
 
 
 def _profile(args) -> str | None:
@@ -121,30 +159,46 @@ def run_listen(args) -> int:
 def run_probe(args) -> int:
     args.interface = resolve_interface(args)
     if not args.active:
-        raise AuthorisationError("active probes require --active and --authorisation")
-    if not args.authorisation:
-        raise AuthorisationError("active probes require --authorisation FILE")
+        raise ConfigError("active checks require --active")
 
-    authorisation = load_authorisation(args.authorisation)
-    tests = parse_tests(args.tests)
+    config = targets_module.load(args.config, args.interface)
+    tests = list(ACTIVE_CHECKS) if args.all else parse_tests(args.tests)
     max_macs = validate_max_macs(args.max_macs)
-    confirm_segment(authorisation, args.confirm_segment)
+    rate = validate_rate(args.rate or config.limits.rate_pps)
 
-    # The passive capture happens before the gate is opened: L2A02 cannot pick a
+    wide = config.wide_prefixes()
+    if wide and not args.yes:
+        for subnet, count in wide:
+            print(
+                "%s is wider than a /24: about %d addresses, roughly %d minutes at "
+                "%d pps" % (subnet, count, count // max(rate, 1) // 60 + 1, rate),
+                file=sys.stderr,
+            )
+        raise ConfigError("wide prefix in targets. Re-run with --yes to proceed")
+
+    # The passive capture happens before anything is sent: L2A02 cannot pick a
     # losing bridge priority without a root priority observed from this port.
     capture = listen.capture(args.interface, args.duration)
     board, findings = posture.from_capture(capture, profile=_profile(args))
 
+    budget = Budget(
+        frames=args.frame_budget or config.limits.frame_budget,
+        packets=args.packet_budget or config.limits.packet_budget,
+    )
     session = ActiveSession(
         interface=args.interface,
+        budget=budget,
+        rate_pps=rate,
+        runtime_cap=(args.runtime or config.limits.runtime_minutes) * 60,
         max_macs=max_macs,
         test_ip=args.test_ip,
         target_vlan=args.target_vlan,
-        observer=args.observer,
+        observer=args.observer or config.internal_observer or None,
+        external_observer=config.external_observer or None,
         local_cidr=listen.interface_cidr(args.interface) or None,
-        gateway=listen.default_gateway(args.interface) or None,
+        gateway=config.gateway or None,
     )
-    session.authorise(authorisation, tests)
+    session.start(tests)
     for result in probes.run_selected(session, capture):
         board.apply(result)
 
@@ -152,7 +206,8 @@ def run_probe(args) -> int:
         board,
         findings,
         capture=capture,
-        authorisation=authorisation,
+        targets=config,
+        budget=budget,
         frames_sent=session.frames_sent,
     )
     _emit(document, board, findings, args)
@@ -169,29 +224,44 @@ def run_observe(args) -> int:
     return 0
 
 
-def run_posture(args) -> int:
-    source = Path(args.source)
-    if not source.is_file():
-        raise AuthorisationError("saved report not found: %s" % source)
-    document = json.loads(source.read_text())
-    board, findings = report.from_dict(document)
-    print(report.render(board, findings))
+def run_audit(args) -> int:
+    """Offline audit. Sends nothing and needs no targets file."""
+    board = posture.Posture.new(posture.WIRED)
+    findings: list = []
+    _emit(report.to_dict(board, findings), board, findings, args)
     return board.exit_code()
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Entry point. Returns 0, 1 for an absent control, or 2 for an input error."""
-    args = build_parser().parse_args(argv)
+def run_posture(args) -> int:
+    source = Path(args.source)
+    if not source.is_file():
+        raise ConfigError("saved report not found: %s" % source)
+    document = json.loads(source.read_text())
+    board, findings = report.from_dict(document)
+    if getattr(args, "diff", None):
+        previous = Path(args.diff)
+        if not previous.is_file():
+            raise ConfigError("previous report not found: %s" % previous)
+        print(report.diff(json.loads(previous.read_text()), document))
+        print()
+    _emit(document, board, findings, args)
+    return board.exit_code()
+
+
+def main(argv: list[str] | None = None, prog: str = "netcheck") -> int:
+    """The netcheck entry point. 0, 1 for an absent control, 2 for an input error."""
+    args = build_parser(prog).parse_args(argv)
     handlers = {
         "listen": run_listen,
         "probe": run_probe,
         "observe": run_observe,
         "posture": run_posture,
         "doctor": run_doctor,
+        "audit": run_audit,
     }
     try:
         return handlers[args.command](args)
-    except AuthorisationError as error:
+    except ConfigError as error:
         print("error: %s" % error, file=sys.stderr)
         return EXIT_INPUT_ERROR
     except PermissionError:
@@ -204,3 +274,11 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def main_l2check(argv: list[str] | None = None) -> int:
+    """The l2check alias. Same commands, layer 2 control set only."""
+    args = argv if argv is not None else sys.argv[1:]
+    if args and args[0] in ("listen", "probe", "posture") and "--layers" not in args:
+        args = list(args) + ["--layers", "l2"]
+    return main(args, prog="l2check")

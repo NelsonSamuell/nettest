@@ -30,7 +30,7 @@ from __future__ import annotations
 import time
 
 from l2check import frames, posture
-from l2check.authorisation import ActiveSession, link_state
+from l2check.session import ActiveSession, link_state
 from l2check.frames import UnsafeFrameError
 from l2check.models import Capture
 from l2check.posture import ABSENT, PRESENT, UNTESTED, ProbeResult

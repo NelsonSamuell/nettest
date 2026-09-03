@@ -5,7 +5,7 @@ set -eu
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 VENV="$HERE/.venv"
-LINK="$HOME/.local/bin/l2check"
+LINKS="netcheck l2check"
 
 say() { printf '%s\n' "$*"; }
 
@@ -51,19 +51,22 @@ else
 fi
 
 # 4. A launcher on PATH, so the tool works from any directory.
-if [ -e "$LINK" ] || [ -L "$LINK" ]; then
-    say "launcher already at $LINK"
-else
-    mkdir -p "$HOME/.local/bin"
-    ln -s "$HERE/bin/l2check" "$LINK"
-    say "linked $LINK"
-fi
+mkdir -p "$HOME/.local/bin"
+for name in $LINKS; do
+    target="$HOME/.local/bin/$name"
+    if [ -e "$target" ] || [ -L "$target" ]; then
+        say "launcher already at $target"
+    else
+        ln -s "$HERE/bin/$name" "$target"
+        say "linked $target"
+    fi
+done
 
 say ""
 say "Setup done. Check it worked:"
 case ":$PATH:" in
-    *":$HOME/.local/bin:"*) say "  l2check doctor" ;;
-    *) say "  $HERE/bin/l2check doctor"
+    *":$HOME/.local/bin:"*) say "  netcheck doctor" ;;
+    *) say "  $HERE/bin/netcheck doctor"
        say ""
        say "($HOME/.local/bin is not on your PATH, so use the full path above,"
        say " or add it with: echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc)" ;;

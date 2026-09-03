@@ -12,7 +12,7 @@ import secrets
 from scapy.layers.dhcp import BOOTP
 
 from l2check import frames, parse, posture
-from l2check.authorisation import ActiveSession
+from l2check.session import ActiveSession
 from l2check.models import Capture
 from l2check.posture import ABSENT, INDETERMINATE, PRESENT, ProbeResult
 from l2check.probes import listen_after_send

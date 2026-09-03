@@ -1,8 +1,8 @@
 """Report rendering.
 
 Two sections: the posture table first, then the findings. The JSON form carries
-the same information plus the detail strings and the authorisation hash, and is
-what ``l2check posture --from`` reads back.
+the same information plus the detail strings and the run metadata, and is what
+``netcheck posture --from`` reads back.
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 from typing import Iterable
 
-from l2check.authorisation import Authorisation
 from l2check.models import Capture, Finding
 from l2check.posture import ABSENT, INDETERMINATE, PRESENT, UNTESTED, Posture
 
@@ -20,14 +19,32 @@ SEVERITY_WIDTH = 10
 CHECK_WIDTH = 8
 
 
-def posture_table(posture: Posture) -> str:
-    """Render the control table."""
-    width = max([MIN_CONTROL_WIDTH] + [len(name) + 2 for name in posture.controls])
+def _layer_of(control) -> str:
+    """Which layer established a control, taken from its basis text."""
+    return "l3" if control.basis.startswith("L3") else "l2"
+
+
+def posture_table(posture: Posture, layers: str = "both") -> str:
+    """Render the control table, layer 2 and layer 3 grouped separately."""
+    shown = [
+        control
+        for control in posture.controls.values()
+        if layers == "both" or _layer_of(control) == layers
+    ]
+    if not shown:
+        return "CONTROL".ljust(MIN_CONTROL_WIDTH) + "STATE".ljust(STATE_WIDTH) + "BASIS"
+    width = max([MIN_CONTROL_WIDTH] + [len(c.name) + 2 for c in shown])
     lines = ["CONTROL".ljust(width) + "STATE".ljust(STATE_WIDTH) + "BASIS"]
-    for control in posture.controls.values():
-        lines.append(
-            control.name.ljust(width) + control.state.ljust(STATE_WIDTH) + control.basis
-        )
+    for group in ("l2", "l3"):
+        rows = [c for c in shown if _layer_of(c) == group]
+        if not rows:
+            continue
+        if layers == "both" and any(_layer_of(c) != group for c in shown):
+            lines.append("%s:" % ("layer 2" if group == "l2" else "layer 3"))
+        for control in rows:
+            lines.append(
+                control.name.ljust(width) + control.state.ljust(STATE_WIDTH) + control.basis
+            )
     return "\n".join(lines)
 
 
@@ -60,18 +77,140 @@ def summary_line(posture: Posture) -> str:
     )
 
 
-def render(posture: Posture, findings: Iterable[Finding]) -> str:
+def reachability_matrix(matrix: dict | None) -> str:
+    """Render the segment reachability matrix. Empty until the L3 checks exist."""
+    if not matrix:
+        return "REACHABILITY\n  no segment pairs tested"
+    segments = sorted({name for pair in matrix for name in pair})
+    width = max(len(name) for name in segments) + 2
+    header = "".ljust(width) + "".join(name.ljust(width) for name in segments)
+    lines = ["REACHABILITY", header]
+    for source in segments:
+        row = source.ljust(width)
+        for destination in segments:
+            row += str(matrix.get((source, destination), "untested")).ljust(width)
+        lines.append(row)
+    return "\n".join(lines)
+
+
+def device_table(devices: Iterable[dict] | None) -> str:
+    """Render the correlated device inventory. Empty until the L3 checks exist."""
+    devices = list(devices or [])
+    if not devices:
+        return "DEVICES\n  none correlated"
+    lines = ["DEVICES", "  %-18s %-16s %s" % ("MAC", "ADDRESSES", "VENDOR")]
+    for device in devices:
+        addresses = ", ".join(device.get("ipv4", []) + device.get("ipv6", []))
+        lines.append(
+            "  %-18s %-16s %s"
+            % (
+                (device.get("macs") or [""])[0],
+                addresses or "-",
+                device.get("oui_vendor", "") or "-",
+            )
+        )
+    return "\n".join(lines)
+
+
+def render(
+    posture: Posture,
+    findings: Iterable[Finding],
+    layers: str = "both",
+    matrix: dict | None = None,
+    devices: Iterable[dict] | None = None,
+) -> str:
     """Render the full text report."""
-    return "\n\n".join(
-        [posture_table(posture), findings_table(findings), summary_line(posture)]
-    )
+    sections = []
+    if matrix or devices:
+        sections.append(reachability_matrix(matrix))
+        sections.append(device_table(devices))
+    sections.append(posture_table(posture, layers))
+    sections.append(findings_table(findings))
+    sections.append(summary_line(posture))
+    return "\n\n".join(sections)
+
+
+def to_markdown(document: dict, posture: Posture, findings: Iterable[Finding]) -> str:
+    """Render the same report as Markdown, for pasting into notes."""
+    lines = ["# netcheck report", ""]
+    run = document.get("run") or {}
+    capture = document.get("capture") or {}
+    if run or capture:
+        lines += ["## Run", ""]
+        for label, value in (
+            ("Config", run.get("config")),
+            ("Gateway", run.get("gateway")),
+            ("Subnets", ", ".join(run.get("subnets", []))),
+            ("Interface", capture.get("interface")),
+            ("Frames seen", capture.get("frames_seen")),
+            ("Packets seen", capture.get("packets_seen")),
+        ):
+            if value not in (None, "", []):
+                lines.append("- %s: %s" % (label, value))
+        lines.append("")
+
+    lines += ["## Posture", "", "| Control | State | Basis |", "| --- | --- | --- |"]
+    for control in posture.controls.values():
+        lines.append("| %s | %s | %s |" % (control.name, control.state, control.basis))
+
+    lines += ["", "## Findings", ""]
+    findings = list(findings)
+    if findings:
+        lines += ["| Severity | Check | Finding |", "| --- | --- | --- |"]
+        for finding in findings:
+            lines.append(
+                "| %s | %s | %s |" % (finding.severity, finding.check, finding.title)
+            )
+    else:
+        lines.append("Nothing observed.")
+
+    budget = document.get("budget")
+    if budget:
+        lines += ["", "## Budget", ""]
+        for key, value in budget.items():
+            lines.append("- %s: %s" % (key.replace("_", " "), value))
+    lines += ["", summary_line(posture), ""]
+    return "\n".join(lines)
+
+
+def diff(previous: dict, current: dict) -> str:
+    """Compare two saved runs and report what changed.
+
+    On a network you own and test repeatedly, the change is the signal: a port
+    that opened, a control that stopped enforcing after a firmware update.
+    """
+    before = previous.get("controls", {})
+    after = current.get("controls", {})
+    lines = ["CHANGES SINCE PREVIOUS RUN"]
+
+    for name in sorted(set(before) | set(after)):
+        old = before.get(name, {}).get("state")
+        new = after.get(name, {}).get("state")
+        if old is None:
+            lines.append("  + %-38s %s (new control)" % (name, new))
+        elif new is None:
+            lines.append("  - %-38s was %s (no longer reported)" % (name, old))
+        elif old != new:
+            lines.append("  ~ %-38s %s -> %s" % (name, old, new))
+
+    old_findings = {(f["check"], f["title"]) for f in previous.get("findings", [])}
+    new_findings = {(f["check"], f["title"]) for f in current.get("findings", [])}
+    for check, title in sorted(new_findings - old_findings):
+        lines.append("  + %-7s %s" % (check, title))
+    for check, title in sorted(old_findings - new_findings):
+        lines.append("  - %-7s %s (gone)" % (check, title))
+
+    if len(lines) == 1:
+        lines.append("  nothing changed")
+    return "\n".join(lines)
 
 
 def to_dict(
     posture: Posture,
     findings: Iterable[Finding],
     capture: Capture | None = None,
-    authorisation: Authorisation | None = None,
+    targets=None,
+    budget=None,
     frames_sent: int = 0,
 ) -> dict:
     """Build the JSON form of a run."""
@@ -84,11 +223,14 @@ def to_dict(
         "summary": posture.counts(),
         "frames_sent": frames_sent,
     }
+    if budget is not None:
+        document["budget"] = budget.as_dict()
     if capture is not None:
         document["capture"] = {
             "interface": capture.interface,
             "duration": capture.duration,
             "frames_seen": capture.frames_seen,
+            "packets_seen": capture.packets_seen,
             "parse_errors": capture.parse_errors,
             "truncated": sorted(capture.truncated),
             "gratuitous_arps": capture.gratuitous_arps,
@@ -121,15 +263,12 @@ def to_dict(
                 "pmf_required": link.pmf_required,
                 "wps": link.wps,
             }
-    if authorisation is not None:
-        document["authorisation"] = {
-            "file": authorisation.path,
-            "sha256": authorisation.sha256,
-            "client": authorisation.client,
-            "engagement": authorisation.engagement,
-            "authorised_by": authorisation.authorised_by,
-            "segment": authorisation.segment,
-            "window": authorisation.window(),
+    if targets is not None:
+        document["run"] = {
+            "config": targets.path,
+            "gateway": targets.gateway,
+            "subnets": targets.subnets,
+            "observers": targets.observers,
         }
     return document
 

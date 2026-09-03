@@ -1,66 +1,59 @@
 import ast
 import pathlib
-from datetime import date
 
 import pytest
-import yaml
 
-from l2check import authorisation, probes
-from l2check.authorisation import (
+from l2check import probes, session as session_module
+from l2check.session import (
     ActiveSession,
-    AuthorisationError,
     CapExceeded,
-    LinkStateChanged,
-    NotAuthorised,
-    load_authorisation,
+    ConfigError,
+    SessionNotStarted,
+    StateChanged,
     validate_max_macs,
+    validate_rate,
 )
 from l2check.models import Capture
 from l2check.posture import ProbeResult
 
 PROBES_DIR = pathlib.Path("l2check/probes")
 
-VALID = {
-    "client": "Example Ltd",
-    "engagement": "Internal network assessment",
-    "authorised_by": "Jane Mwangi, Head of Infrastructure",
-    "contact": "jane@example.co.ke",
-    "issued": date(2026, 9, 1),
-    "expires": date(2026, 9, 14),
-    "segment": "Floor 3 user VLAN, patch panel port 3-14",
-    "change_window": True,
-}
-
-
 @pytest.fixture
 def gated(tmp_path):
-    path = tmp_path / "authorisation.yaml"
-    path.write_text(yaml.safe_dump(VALID, sort_keys=False))
-    auth = load_authorisation(path, today=date(2026, 9, 7))
+    """A started session with a stubbed sender, plus the list it sends into."""
     sent = []
     session = ActiveSession(interface="lo", sender=lambda iface, frame: sent.append(frame))
-    session.authorise(auth, ["L2A01"])
+    session.start(["L2A01"])
     return session, sent
 
 
-def test_max_macs_above_the_cap_is_rejected():
-    with pytest.raises(AuthorisationError) as excinfo:
-        validate_max_macs(900)
-    assert "500" in str(excinfo.value)
+def test_the_send_rate_is_the_one_limit_a_flag_cannot_raise():
+    assert validate_rate(200) == 200
+    assert validate_rate(session_module.RATE_HARD_CAP) == session_module.RATE_HARD_CAP
+    with pytest.raises(ConfigError) as excinfo:
+        validate_rate(session_module.RATE_HARD_CAP + 1)
+    assert "1000" in str(excinfo.value)
+    with pytest.raises(ConfigError):
+        validate_rate(0)
 
 
-def test_max_macs_cap_is_enforced_in_code_not_in_help_text():
-    source = pathlib.Path("l2check/authorisation.py").read_text()
-    assert "MAX_MACS_CAP = 500" in source
+def test_max_macs_is_now_a_default_not_a_ceiling():
+    """Caps became defaults, so a large value is allowed and only zero is not."""
+    assert validate_max_macs(900) == 900
+    with pytest.raises(ConfigError):
+        validate_max_macs(0)
+
+
+def test_the_rate_cap_is_enforced_in_code_not_in_help_text():
+    source = pathlib.Path("l2check/session.py").read_text()
+    assert "RATE_HARD_CAP = 1000" in source
     tree = ast.parse(pathlib.Path("l2check/cli.py").read_text())
     calls = [
-        node
+        node.func.id
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "validate_max_macs"
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     ]
-    assert calls, "the CLI must route --max-macs through validate_max_macs"
+    assert "validate_rate" in calls, "the CLI must route --rate through validate_rate"
 
 
 def test_the_total_frame_cap_is_enforced_across_probes(gated):
@@ -84,16 +77,16 @@ def test_the_frame_cap_rejects_a_batch_that_would_overshoot(gated):
 
 
 def test_the_default_frame_cap_is_600():
-    assert authorisation.TOTAL_FRAME_CAP == 600
+    assert session_module.FRAME_BUDGET == 600
     assert ActiveSession(interface="lo").frame_cap == 600
 
 
 def test_the_runtime_cap_exists_and_stops_sending(gated):
     session, sent = gated
-    assert session.runtime_cap == authorisation.TOTAL_RUNTIME_CAP == 600
-    clock = iter([0.0, 601.0, 601.0])
+    assert session.runtime_cap == session_module.RUNTIME_SECONDS == 900
+    clock = iter([0.0, 901.0, 901.0, 901.0])
     session.clock = lambda: next(clock)
-    session.authorise(session.authorisation, ["L2A01"])
+    session.start(["L2A01"])
     with pytest.raises(CapExceeded):
         session.send(b"\x00" * 60)
     assert sent == []
@@ -102,7 +95,7 @@ def test_the_runtime_cap_exists_and_stops_sending(gated):
 def test_an_unexpected_link_change_is_a_hard_stop(gated):
     session, sent = gated
     session._baseline_link = "up"
-    with pytest.raises(LinkStateChanged):
+    with pytest.raises(StateChanged):
         session.send(b"\x00" * 60)
     assert sent == []
 
@@ -133,8 +126,18 @@ def test_no_probe_module_sends_without_going_through_the_session():
                     )
 
 
-def test_every_probe_identifier_has_exactly_one_implementation():
-    assert sorted(probes.registry()) == sorted(authorisation.ACTIVE_CHECKS)
+def test_every_registered_check_is_a_known_identifier():
+    """The registry may lag the ID list while a layer is being built, never lead it."""
+    registered = set(probes.registry())
+    assert registered <= set(session_module.ACTIVE_CHECKS)
+
+
+def test_every_layer_2_check_has_exactly_one_implementation():
+    assert sorted(probes.registry()) == sorted(session_module.L2_ACTIVE_CHECKS)
+
+
+def test_the_two_layers_share_no_identifiers():
+    assert not set(session_module.L2_ACTIVE_CHECKS) & set(session_module.L3_ACTIVE_CHECKS)
 
 
 def test_the_runner_stops_at_a_cap_and_reports_it(gated):
@@ -171,7 +174,7 @@ def test_the_runner_stops_on_an_unexpected_link_change(gated):
     messages = []
 
     def boom(_session, _capture):
-        raise LinkStateChanged("interface lo went from up to down")
+        raise StateChanged("interface lo went from up to down")
 
     probes.registry = lambda: {"L2A01": boom, "L2A04": boom}
     try:
@@ -184,8 +187,8 @@ def test_the_runner_stops_on_an_unexpected_link_change(gated):
 
 def test_the_gate_is_the_only_way_to_reach_the_wire():
     session = ActiveSession(interface="lo", sender=lambda iface, frame: None)
-    assert not session.authorised
-    with pytest.raises(NotAuthorised):
+    assert not session.started
+    with pytest.raises(SessionNotStarted):
         session.send(b"\x00" * 60)
 
 
@@ -276,7 +279,7 @@ def test_the_new_probes_are_still_behind_the_gate():
 
     session = ActiveSession(interface="wlan0", sender=lambda i, f: None)
     session.local_cidr = "192.168.1.10/24"
-    with pytest.raises(NotAuthorised):
+    with pytest.raises(SessionNotStarted):
         segment.run_upnp(session, Capture())
 
 
@@ -290,13 +293,13 @@ def test_a_connection_is_refused_before_the_gate_passes():
         gateway="192.168.1.1",
         connector=lambda a, p, t: tried.append((a, p)) or True,
     )
-    with pytest.raises(NotAuthorised):
+    with pytest.raises(SessionNotStarted):
         session.connect("192.168.1.1", 80)
     assert tried == []
 
 
 def test_connections_are_charged_against_the_frame_budget(gated):
-    from l2check.authorisation import CONNECT_FRAME_COST
+    from l2check.session import CONNECT_FRAME_COST
 
     session, _ = gated
     session.connector = lambda a, p, t: True
@@ -319,7 +322,7 @@ def test_an_unexpected_link_change_stops_connections(gated):
     session, _ = gated
     session.connector = lambda a, p, t: True
     session._baseline_link = "up"
-    with pytest.raises(LinkStateChanged):
+    with pytest.raises(StateChanged):
         session.connect("192.168.1.1", 80)
 
 
@@ -336,7 +339,7 @@ def test_gateway_probe_reports_only_its_own_spend(gated):
 
 
 def test_gateway_probe_stops_when_the_budget_runs_out(gated):
-    from l2check.authorisation import CONNECT_FRAME_COST
+    from l2check.session import CONNECT_FRAME_COST
     from l2check.probes import segment
 
     session, _ = gated
@@ -390,6 +393,98 @@ def test_autodetection_errors_clearly_when_nothing_is_usable(monkeypatch):
     class Args:
         interface = None
 
-    with pytest.raises(AuthorisationError) as excinfo:
+    with pytest.raises(ConfigError) as excinfo:
         cli.resolve_interface(Args())
     assert "doctor" in str(excinfo.value)
+
+
+# Two budgets that decrement independently, and a rate limit that paces sends.
+
+def test_the_two_budgets_are_independent(gated):
+    from l2check.session import LAYER2, LAYER3
+
+    session, _ = gated
+    session.send([b"\x00" * 60] * 5, layer=LAYER2)
+    session.send([b"\x00" * 60] * 40, layer=LAYER3)
+    assert session.budget.frames_sent == 5
+    assert session.budget.packets_sent == 40
+    assert session.frames_remaining == session.budget.frames - 5
+    assert session.packets_remaining == session.budget.packets - 40
+
+
+def test_exhausting_one_budget_leaves_the_other_usable(gated):
+    from l2check.session import LAYER2, LAYER3
+
+    session, _ = gated
+    session.budget.frames = 2
+    session.send([b"\x00" * 60] * 2, layer=LAYER2)
+    with pytest.raises(CapExceeded):
+        session.send(b"\x00" * 60, layer=LAYER2)
+    assert session.send([b"\x00" * 60] * 3, layer=LAYER3) == 3
+
+
+def test_the_send_rate_paces_transmission(gated):
+    session, _ = gated
+    slept = []
+    ticks = iter([0.0] * 40)
+    session.sleeper = slept.append
+    session.clock = lambda: next(ticks, 0.0)
+    session.rate_pps = 10
+    session.send(b"\x00" * 60)
+    session.send(b"\x00" * 60)
+    assert slept, "the second send should have been paced"
+    assert abs(slept[-1] - 0.1) < 0.001
+
+
+def test_a_session_started_with_an_illegal_rate_is_refused():
+    session = ActiveSession(interface="lo", rate_pps=5000, sender=lambda i, f: None)
+    with pytest.raises(ConfigError):
+        session.start(["L2A01"])
+
+
+def test_a_gateway_mac_change_aborts_the_run(gated, monkeypatch):
+    session, sent = gated
+    session.gateway = "192.168.1.1"
+    session._baseline_gateway_mac = "aa:bb:cc:dd:ee:01"
+    monkeypatch.setattr(
+        type(session), "gateway_mac", lambda self: "de:ad:be:ef:00:01"
+    )
+    session.current_check = "L3A02"
+    with pytest.raises(StateChanged) as excinfo:
+        session.send(b"\x00" * 60)
+    assert "changed MAC" in str(excinfo.value)
+    assert session.aborted_during == "L3A02"
+    assert sent == []
+
+
+def test_the_runner_records_which_check_was_in_flight(gated):
+    session, _ = gated
+    session.tests = ["L2A01"]
+    messages = []
+
+    def boom(_session, _capture):
+        raise StateChanged("gateway 192.168.1.1 stopped responding")
+
+    probes.registry = lambda: {"L2A01": boom}
+    try:
+        probes.run_selected(session, Capture(), out=messages.append)
+    finally:
+        del probes.registry
+    assert "L2A01" in messages[0]
+
+
+def test_an_unimplemented_check_id_is_skipped_not_crashed(gated):
+    session, _ = gated
+    session.tests = ["L2A01", "L3A02"]
+    calls = []
+    probes.registry = lambda: {
+        "L2A01": lambda s, c: calls.append("L2A01") or ProbeResult(
+            "L2A01", "BPDU Guard", "ABSENT", "L2A01", "", 1
+        )
+    }
+    try:
+        results = probes.run_selected(session, Capture(), out=lambda m: None)
+    finally:
+        del probes.registry
+    assert calls == ["L2A01"]
+    assert len(results) == 1
