@@ -86,29 +86,85 @@ point advertises, not what it does under attack.
 
 Linux only. l2check uses `AF_PACKET` directly.
 
+Run the setup script once:
+
 ```
-pip install .
+./setup.sh
 ```
 
-Opening a raw socket needs `CAP_NET_RAW`. Setting the capability on the Python
-binary is preferable to running the whole tool as root:
+It creates a virtual environment in `.venv`, installs l2check into it, grants
+that environment permission to read frames, and links `l2check` into
+`~/.local/bin` so it works from any directory. It asks for `sudo` once, for the
+permission step alone. Running it again is safe and skips whatever is already
+done.
+
+Then check it worked:
+
+```
+l2check doctor
+```
+
+That prints what is installed, whether l2check may read frames, which interfaces
+exist, and the exact command to run next. It is the first thing to run when
+something does not work.
+
+After that, `--interface` is optional. With no interface named, l2check uses the
+one carrying your default route:
+
+```
+l2check listen                       # 120 seconds on your main interface
+l2check listen --duration 30
+l2check listen --interface wlan0 --json --out posture.json
+l2check posture --from posture.json
+```
+
+The active side and the cooperating observer:
+
+```
+l2check probe --interface eth0 --active --authorisation auth.yaml --tests L2A01,L2A04
+l2check observe --interface eth0 --port 9001
+```
+
+Exit codes: 0 when no control is absent, 1 when one or more are, 2 for an input
+or authorisation error.
+
+### Why the setup script, and not setcap on the system python
+
+Reading raw frames needs `CAP_NET_RAW`. The obvious way to get it is:
 
 ```
 sudo setcap cap_net_raw,cap_net_admin+eip "$(readlink -f "$(which python3)")"
 ```
 
-Then:
+Do not do this. It grants raw socket access to **every** Python program on the
+machine, for every user, permanently. Any script anyone runs can then read all
+traffic on every interface. It is a much larger grant than the tool needs.
+
+`setup.sh` builds its virtual environment with `--copies`, so the environment
+gets its own `python3` binary rather than a symlink to the system one, and the
+capability is granted to that copy alone. Nothing outside `.venv` gains
+anything.
+
+If you previously ran the command above, undo it:
 
 ```
-l2check listen --interface eth0 --duration 120
-l2check listen --interface eth0 --json --out posture.json
-l2check probe --interface eth0 --active --authorisation auth.yaml --tests L2A01,L2A04
-l2check observe --interface eth0 --port 9001
-l2check posture --from posture.json
+sudo setcap -r "$(readlink -f "$(which python3)")"
+getcap "$(readlink -f "$(which python3)")"    # should print nothing
 ```
 
-Exit codes: 0 when no control is absent, 1 when one or more are, 2 for an input
-or authorisation error.
+Running the tool as root works too, and is worse: everything the tool does then
+runs as root, rather than one binary holding one capability.
+
+### Installing it the manual way
+
+If you would rather not use the script:
+
+```
+python3 -m venv --copies --system-site-packages .venv
+.venv/bin/pip install -e .
+sudo setcap cap_net_raw,cap_net_admin+eip .venv/bin/python3
+.venv/bin/l2check doctor
+```
 
 ## Checks
 
@@ -131,6 +187,8 @@ or authorisation error.
 | L2P15 | Wireless link encryption | read-only | 0 |
 | L2P16 | Protected management frames, 802.11w | read-only | 0 |
 | L2P17 | WPS advertised | read-only | 0 |
+
+`l2check doctor` is not a check. It inspects your own machine and sends nothing.
 | L2A01 | DTP trunk negotiation | active | 1 |
 | L2A02 | BPDU Guard verification | active | 1 |
 | L2A03 | Port security threshold | active | up to 50, ceiling 500 |
@@ -180,9 +238,12 @@ addresses. `--teardown` removes it.
 
 ```
 sudo ./lab/build_lab.sh
-sudo l2check listen --interface l2trunk --duration 30
+l2check listen --interface l2trunk --duration 30
 sudo ./lab/build_lab.sh --teardown
 ```
+
+Building the lab needs root because it creates bridges and namespaces. Capturing
+on it does not, once `setup.sh` has run.
 
 Open vSwitch does not implement CDP, DTP, VTP, BPDU Guard, DHCP Snooping,
 Dynamic ARP Inspection or port security. The lab exercises the parsers, the

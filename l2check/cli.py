@@ -12,7 +12,7 @@ import json
 import sys
 from pathlib import Path
 
-from l2check import listen, posture, probes, report
+from l2check import doctor, listen, posture, probes, report
 from l2check.authorisation import (
     ACTIVE_CHECKS,
     ActiveSession,
@@ -29,8 +29,14 @@ EXIT_ABSENT = 1
 EXIT_INPUT_ERROR = 2
 
 CAPABILITY_HINT = (
-    "no permission to open a raw socket on %s. l2check needs CAP_NET_RAW; "
-    "setting it on the Python binary is preferable to running as root"
+    "no permission to read frames on %s.\n"
+    "  Run ./setup.sh once to grant this to the project only, then try again.\n"
+    "  Run 'l2check doctor' to see what is missing."
+)
+
+NO_INTERFACE_HINT = (
+    "no usable interface found. Run 'l2check doctor' to see what is available, "
+    "or name one with --interface"
 )
 
 
@@ -40,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     listener = sub.add_parser("listen", help="passive capture, sends nothing")
-    listener.add_argument("--interface", required=True)
+    listener.add_argument("--interface", help="defaults to the interface with the default route")
     listener.add_argument("--duration", type=int, default=listen.DEFAULT_DURATION)
     listener.add_argument("--json", action="store_true", help="print JSON instead of a table")
     listener.add_argument("--out", help="write the JSON report to this path")
@@ -52,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     prober = sub.add_parser("probe", help="active probes, requires written authorisation")
-    prober.add_argument("--interface", required=True)
+    prober.add_argument("--interface", help="defaults to the interface with the default route")
     prober.add_argument("--active", action="store_true")
     prober.add_argument("--authorisation")
     prober.add_argument("--tests", help="probe identifiers: %s" % ", ".join(ACTIVE_CHECKS))
@@ -77,7 +83,20 @@ def build_parser() -> argparse.ArgumentParser:
     rebuild = sub.add_parser("posture", help="rebuild the table from a saved JSON report")
     rebuild.add_argument("--from", dest="source", required=True)
 
+    sub.add_parser("doctor", help="check the environment and say what to run next")
+
     return parser
+
+
+def resolve_interface(args) -> str:
+    """Return the interface to use, picking a sensible one when none was named."""
+    if getattr(args, "interface", None):
+        return args.interface
+    chosen = doctor.suggested_interface()
+    if not chosen:
+        raise AuthorisationError(NO_INTERFACE_HINT)
+    print("using interface %s" % chosen, file=sys.stderr)
+    return chosen
 
 
 def _emit(document: dict, board: posture.Posture, findings: list, args) -> None:
@@ -92,6 +111,7 @@ def _profile(args) -> str | None:
 
 
 def run_listen(args) -> int:
+    args.interface = resolve_interface(args)
     capture = listen.capture(args.interface, args.duration)
     board, findings = posture.from_capture(capture, profile=_profile(args))
     _emit(report.to_dict(board, findings, capture=capture), board, findings, args)
@@ -99,6 +119,7 @@ def run_listen(args) -> int:
 
 
 def run_probe(args) -> int:
+    args.interface = resolve_interface(args)
     if not args.active:
         raise AuthorisationError("active probes require --active and --authorisation")
     if not args.authorisation:
@@ -138,6 +159,11 @@ def run_probe(args) -> int:
     return board.exit_code()
 
 
+def run_doctor(args) -> int:
+    print(doctor.report())
+    return 0 if doctor.can_open_raw_socket() else EXIT_INPUT_ERROR
+
+
 def run_observe(args) -> int:
     Observer(args.interface, args.port).serve()
     return 0
@@ -161,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
         "probe": run_probe,
         "observe": run_observe,
         "posture": run_posture,
+        "doctor": run_doctor,
     }
     try:
         return handlers[args.command](args)
@@ -168,7 +195,8 @@ def main(argv: list[str] | None = None) -> int:
         print("error: %s" % error, file=sys.stderr)
         return EXIT_INPUT_ERROR
     except PermissionError:
-        print("error: " + CAPABILITY_HINT % args.interface, file=sys.stderr)
+        target = getattr(args, "interface", None) or "this interface"
+        print("error: " + CAPABILITY_HINT % target, file=sys.stderr)
         return EXIT_INPUT_ERROR
     except KeyboardInterrupt:
         return EXIT_INPUT_ERROR

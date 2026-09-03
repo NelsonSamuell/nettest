@@ -371,3 +371,25 @@ def test_no_probe_opens_its_own_socket():
                     assert node.func.value.id == "session", (
                         "%s connects outside the session" % path
                     )
+
+
+def test_a_named_interface_always_wins_over_autodetection():
+    from l2check.cli import resolve_interface
+
+    class Args:
+        interface = "eth9"
+
+    assert resolve_interface(Args()) == "eth9"
+
+
+def test_autodetection_errors_clearly_when_nothing_is_usable(monkeypatch):
+    from l2check import cli, doctor
+
+    monkeypatch.setattr(doctor, "suggested_interface", lambda: "")
+
+    class Args:
+        interface = None
+
+    with pytest.raises(AuthorisationError) as excinfo:
+        cli.resolve_interface(Args())
+    assert "doctor" in str(excinfo.value)

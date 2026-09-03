@@ -1,0 +1,14 @@
+#!/bin/sh
+# Runs l2check from the project's own virtual environment, so there is nothing
+# to activate and nothing to remember.
+set -eu
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$(readlink -f "$0")")/.." && pwd)
+VENV="$HERE/.venv"
+
+if [ ! -x "$VENV/bin/l2check" ]; then
+    printf 'l2check is not set up yet. Run this once:\n  %s/setup.sh\n' "$HERE" >&2
+    exit 2
+fi
+
+exec "$VENV/bin/l2check" "$@"
