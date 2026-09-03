@@ -20,8 +20,14 @@ CHECK_WIDTH = 8
 
 
 def _layer_of(control) -> str:
-    """Which layer established a control, taken from its basis text."""
-    return "l3" if control.basis.startswith("L3") else "l2"
+    """Which layer a control belongs to.
+
+    Membership decides this, not the basis text: an untested layer 3 control has
+    a basis of "probe not selected" and would otherwise be filed under layer 2.
+    """
+    from l2check.posture import L3_CONTROLS
+
+    return "l3" if control.name in L3_CONTROLS else "l2"
 
 
 def posture_table(posture: Posture, layers: str = "both") -> str:
@@ -112,12 +118,35 @@ def device_table(devices: Iterable[dict] | None) -> str:
     return "\n".join(lines)
 
 
+def host_posture_section(host) -> str:
+    """Render CFG02, which describes this machine and not the network.
+
+    Kept in its own section and labelled, because a reader skimming a network
+    posture report will otherwise attribute these to the router.
+    """
+    if host is None:
+        return ""
+    lines = ["THIS MACHINE (not the network)"]
+    lines.append("  firewall      %s" % (host.firewall or "none detected"))
+    if host.firewall:
+        lines.append("  rules         %d" % host.firewall_rules)
+    for name, value in sorted(host.sysctls.items()):
+        if value:
+            lines.append("  %-38s %s" % (name, value))
+    if host.listening:
+        shown = ", ".join("%s/%d" % pair for pair in host.listening[:10])
+        more = "" if len(host.listening) <= 10 else " and %d more" % (len(host.listening) - 10)
+        lines.append("  listening     %s%s" % (shown, more))
+    return "\n".join(lines)
+
+
 def render(
     posture: Posture,
     findings: Iterable[Finding],
     layers: str = "both",
     matrix: dict | None = None,
     devices: Iterable[dict] | None = None,
+    host: object | None = None,
 ) -> str:
     """Render the full text report."""
     sections = []
@@ -126,8 +155,10 @@ def render(
         sections.append(device_table(devices))
     sections.append(posture_table(posture, layers))
     sections.append(findings_table(findings))
+    if host is not None:
+        sections.append(host_posture_section(host))
     sections.append(summary_line(posture))
-    return "\n\n".join(sections)
+    return "\n\n".join(section for section in sections if section)
 
 
 def to_markdown(document: dict, posture: Posture, findings: Iterable[Finding]) -> str:
@@ -152,6 +183,16 @@ def to_markdown(document: dict, posture: Posture, findings: Iterable[Finding]) -
     lines += ["## Posture", "", "| Control | State | Basis |", "| --- | --- | --- |"]
     for control in posture.controls.values():
         lines.append("| %s | %s | %s |" % (control.name, control.state, control.basis))
+
+    host = document.get("host")
+    if host:
+        lines += ["", "## This machine (not the network)", ""]
+        lines.append("- Firewall: %s" % (host.get("firewall") or "none detected"))
+        for name, value in sorted((host.get("sysctls") or {}).items()):
+            if value:
+                lines.append("- %s: %s" % (name, value))
+        if host.get("listening"):
+            lines.append("- Listening: %s" % ", ".join(host["listening"]))
 
     lines += ["", "## Findings", ""]
     findings = list(findings)
@@ -250,6 +291,27 @@ def to_dict(
                 "peer_traffic": len(capture.peer_traffic),
             },
         }
+        if capture.host_posture is not None:
+            host = capture.host_posture
+            document["host"] = {
+                "firewall": host.firewall,
+                "firewall_rules": host.firewall_rules,
+                "sysctls": host.sysctls,
+                "listening": ["%s/%d" % pair for pair in host.listening],
+            }
+        if capture.router_config is not None:
+            config = capture.router_config
+            document["router_config"] = {
+                "format": config.format,
+                "readable": config.readable,
+                "model": config.model,
+                "firmware": config.firmware,
+                "note": config.note,
+                "settings": [
+                    {"key": s.key, "value": s.value, "enabled": s.enabled}
+                    for s in config.settings
+                ],
+            }
         if capture.wireless is not None:
             link = capture.wireless
             document["wireless"] = {

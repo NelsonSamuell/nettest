@@ -101,6 +101,8 @@ def build_parser(prog: str = "netcheck") -> argparse.ArgumentParser:
     auditor.add_argument("--config", help="exported router config to parse")
     auditor.add_argument("--json", action="store_true")
     auditor.add_argument("--out")
+    auditor.add_argument("--markdown", metavar="PATH")
+    auditor.add_argument("--layers", choices=("l2", "l3", "both"), default="both")
 
     sub.add_parser("doctor", help="check the environment and say what to run next")
 
@@ -132,7 +134,7 @@ def resolve_interface(args) -> str:
     return chosen
 
 
-def _emit(document: dict, board: posture.Posture, findings: list, args) -> None:
+def _emit(document: dict, board: posture.Posture, findings: list, args, host=None) -> None:
     if getattr(args, "out", None):
         Path(args.out).write_text(report.to_json(document) + "\n")
     if getattr(args, "markdown", None):
@@ -140,7 +142,14 @@ def _emit(document: dict, board: posture.Posture, findings: list, args) -> None:
     if getattr(args, "json", False):
         print(report.to_json(document))
     else:
-        print(report.render(board, findings, layers=getattr(args, "layers", "both")))
+        print(
+            report.render(
+                board,
+                findings,
+                layers=getattr(args, "layers", "both"),
+                host=host,
+            )
+        )
 
 
 def _profile(args) -> str | None:
@@ -152,7 +161,13 @@ def run_listen(args) -> int:
     args.interface = resolve_interface(args)
     capture = listen.capture(args.interface, args.duration)
     board, findings = posture.from_capture(capture, profile=_profile(args))
-    _emit(report.to_dict(board, findings, capture=capture), board, findings, args)
+    _emit(
+        report.to_dict(board, findings, capture=capture),
+        board,
+        findings,
+        args,
+        host=capture.host_posture,
+    )
     return board.exit_code()
 
 
@@ -210,7 +225,7 @@ def run_probe(args) -> int:
         budget=budget,
         frames_sent=session.frames_sent,
     )
-    _emit(document, board, findings, args)
+    _emit(document, board, findings, args, host=capture.host_posture)
     return board.exit_code()
 
 
@@ -225,10 +240,17 @@ def run_observe(args) -> int:
 
 
 def run_audit(args) -> int:
-    """Offline audit. Sends nothing and needs no targets file."""
-    board = posture.Posture.new(posture.WIRED)
-    findings: list = []
-    _emit(report.to_dict(board, findings), board, findings, args)
+    """Offline audit. Sends nothing, needs no targets file and no interface."""
+    from l2check.l3.config_audit import parse_router_config, read_host_posture
+    from l2check.models import Capture
+
+    capture = Capture(interface="", duration=0)
+    capture.host_posture = read_host_posture()
+    if args.config:
+        capture.router_config = parse_router_config(args.config)
+    board, findings = posture.from_capture(capture, profile=posture.WIRED)
+    document = report.to_dict(board, findings, capture=capture)
+    _emit(document, board, findings, args, host=capture.host_posture)
     return board.exit_code()
 
 

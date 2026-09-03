@@ -1,0 +1,35 @@
+#!/bin/sh
+# Validate and install a curated advisory file for CFG03.
+# Usage: ./bin/update-advisories path/to/advisories.json
+set -eu
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$(readlink -f "$0")")/.." && pwd)
+TARGET="$HERE/l2check/data/advisories.json"
+
+if [ $# -ne 1 ]; then
+    printf 'usage: %s path/to/advisories.json\n' "$0" >&2
+    exit 2
+fi
+
+python3 - "$1" "$TARGET" <<'PYTHON'
+import json
+import shutil
+import sys
+
+source, target = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(source))
+except (OSError, ValueError) as error:
+    sys.exit("refusing to install: %s" % error)
+
+if not isinstance(data, dict) or "entries" not in data:
+    sys.exit("refusing to install: no 'entries' key")
+
+for index, entry in enumerate(data["entries"]):
+    for required in ("model", "identifier", "summary"):
+        if not entry.get(required):
+            sys.exit("refusing to install: entry %d has no %r" % (index, required))
+
+shutil.copyfile(source, target)
+print("installed %d entries into %s" % (len(data["entries"]), target))
+PYTHON

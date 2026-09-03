@@ -39,6 +39,17 @@ CLIENT_ISOLATION = "Client isolation"
 UPNP_DISABLED = "UPnP IGD disabled"
 GATEWAY_ADMIN = "Gateway management encrypted"
 
+INBOUND_V4 = "Inbound IPv4 filtering"
+INBOUND_V6 = "Inbound IPv6 filtering"
+EGRESS_FILTERING = "Egress filtering"
+ANTI_SPOOFING = "Anti-spoofing (BCP38)"
+MANAGEMENT_ISOLATION = "Management plane isolation"
+UPNP_RESTRAINT = "UPnP mapping restraint"
+DNS_REBINDING = "DNS rebinding protection"
+RESOLVER_SCOPING = "Resolver scoping"
+GUEST_SEGMENTATION = "Guest segmentation"
+ICMP_REDIRECTS = "ICMP redirect handling"
+
 LINK_ENCRYPTION = "Link encryption"
 PMF = "Protected Management Frames"
 WPS_DISABLED = "WPS disabled"
@@ -56,6 +67,20 @@ COMMON_CONTROLS = (
     CLIENT_ISOLATION,
     UPNP_DISABLED,
     GATEWAY_ADMIN,
+)
+
+# Layer 3 controls, present on any segment.
+L3_CONTROLS = (
+    INBOUND_V4,
+    INBOUND_V6,
+    EGRESS_FILTERING,
+    ANTI_SPOOFING,
+    MANAGEMENT_ISOLATION,
+    UPNP_RESTRAINT,
+    DNS_REBINDING,
+    RESOLVER_SCOPING,
+    GUEST_SEGMENTATION,
+    ICMP_REDIRECTS,
 )
 
 # Controls that only exist on a switch port.
@@ -78,11 +103,11 @@ WIRELESS_CONTROLS = (
 )
 
 PROFILES = {
-    WIRED: WIRED_CONTROLS + COMMON_CONTROLS,
-    WIRELESS: WIRELESS_CONTROLS + COMMON_CONTROLS,
+    WIRED: WIRED_CONTROLS + COMMON_CONTROLS + L3_CONTROLS,
+    WIRELESS: WIRELESS_CONTROLS + COMMON_CONTROLS + L3_CONTROLS,
 }
 
-CONTROL_NAMES = WIRED_CONTROLS + WIRELESS_CONTROLS + COMMON_CONTROLS
+CONTROL_NAMES = WIRED_CONTROLS + WIRELESS_CONTROLS + COMMON_CONTROLS + L3_CONTROLS
 
 # Root Guard cannot be tested without sending a BPDU superior to the current
 # root, which is the one thing this tool will never do.
@@ -633,7 +658,15 @@ def profile_for(capture: Capture) -> str:
 
 def from_capture(capture: Capture, profile: str | None = None) -> tuple[Posture, list[Finding]]:
     """Build the posture and findings a passive capture supports."""
+    from l2check.l3.findings import apply_passive_l3, findings_l3
+
     posture = Posture.new(profile or profile_for(capture))
     apply_passive(posture, capture)
     apply_wireless(posture, capture.wireless)
-    return posture, findings(capture)
+    apply_passive_l3(posture, capture)
+
+    order = {HIGH: 0, MEDIUM: 1}
+    combined = findings(capture) + findings_l3(capture)
+    return posture, sorted(
+        combined, key=lambda f: (order.get(f.severity, 2), f.check)
+    )

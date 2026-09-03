@@ -178,3 +178,22 @@ allowances. `l3/targets.py` reads the optional targets file.
 `netcheck` is the console script; `l2check` is an alias appending `--layers l2`.
 The report gained a Markdown writer, a `diff` between saved runs, layer grouping,
 and empty-for-now matrix and device sections. `Capture` gained `packets_seen`.
+
+**Milestone 2, offline and passive layer 3.** `l3/parse.py` adds ten passive
+parsers dispatched from inside the existing guarded loop in `parse.parse_frame`,
+so a malformed packet still increments `parse_errors` rather than aborting the
+capture. `l3/config_audit.py` adds the three offline checks. `l3/findings.py`
+holds the layer 3 control derivation and findings, called from
+`posture.from_capture` after the layer 2 and wireless passes.
+
+`Capture` gained ten record lists, `local_cidr`, `host_posture`,
+`router_config`, and `stamp`/`seen_window` for first and last sighting, which
+live outside the dedup key so a repeated sighting updates the window without
+creating a record.
+
+Ten layer 3 controls were added to both profiles. `report._layer_of` groups by
+control membership rather than basis text, because an untested layer 3 control
+has a basis of "probe not selected".
+
+L3P02 deliberately emits no finding: L2P11 already reports cleartext between two
+hosts, and the spec calls for the overlap to be merged rather than counted twice.

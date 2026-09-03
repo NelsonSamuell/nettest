@@ -39,6 +39,7 @@ from scapy.layers.snmp import SNMP
 from scapy.layers.vrrp import VRRP, VRRPv3
 from scapy.packet import Packet
 
+from l2check.l3.parse import parse_l3
 from l2check.models import (
     ArpRecord,
     PeerTrafficRecord,
@@ -418,6 +419,7 @@ def parse_frame(pkt: Packet, capture: Capture) -> None:
     try:
         if IP in pkt or IPv6 in pkt:
             capture.packets_seen += 1
+        parse_l3(pkt, capture)
         for tag in parse_tagged(pkt):
             capture.add("tagged", tag)
         peer = parse_peer_traffic(pkt, capture.local_macs)

@@ -147,6 +147,73 @@ class CleartextRecord:
 
 
 @dataclass
+class HostRecord:
+    """One IP-to-MAC binding, however it was learned."""
+
+    mac: str
+    ip: str
+    family: int
+    source: str
+
+
+@dataclass
+class ResolverRecord:
+    client_mac: str
+    resolver_ip: str
+    transport: str
+
+
+@dataclass
+class DnsAnswerRecord:
+    name: str
+    address: str
+    private: bool
+
+
+@dataclass
+class IPv6ModeRecord:
+    mac: str
+    address: str
+    scope: str
+    mode: str
+    privacy: bool
+
+
+@dataclass
+class ServiceAnnouncement:
+    protocol: str
+    source_mac: str
+    service_type: str
+
+
+@dataclass
+class IcmpRecord:
+    kind: str
+    source_ip: str
+    detail: str
+
+
+@dataclass
+class OutboundRecord:
+    source_ip: str
+    destination_ip: str
+    port: int
+    transport: str
+
+
+@dataclass
+class FragmentRecord:
+    source_ip: str
+    family: int
+
+
+@dataclass
+class HopCountRecord:
+    source_ip: str
+    hop_limit: int
+
+
+@dataclass
 class Capture:
     interface: str = ""
     duration: int = 0
@@ -165,6 +232,15 @@ class Capture:
     router_adverts: list[RouterAdvertRecord] = field(default_factory=list)
     upnp: list[UpnpRecord] = field(default_factory=list)
     peer_traffic: list[PeerTrafficRecord] = field(default_factory=list)
+    hosts: list[HostRecord] = field(default_factory=list)
+    resolvers: list[ResolverRecord] = field(default_factory=list)
+    dns_answers: list[DnsAnswerRecord] = field(default_factory=list)
+    ipv6_modes: list[IPv6ModeRecord] = field(default_factory=list)
+    services: list[ServiceAnnouncement] = field(default_factory=list)
+    icmp: list[IcmpRecord] = field(default_factory=list)
+    outbound: list[OutboundRecord] = field(default_factory=list)
+    fragments: list[FragmentRecord] = field(default_factory=list)
+    hop_counts: list[HopCountRecord] = field(default_factory=list)
     wireless: object | None = None
     local_macs: set = field(default_factory=set)
 
@@ -172,7 +248,19 @@ class Capture:
     gratuitous_arps: int = 0
     parse_errors: int = 0
     truncated: set = field(default_factory=set)
+    first_seen: dict = field(default_factory=dict)
+    last_seen: dict = field(default_factory=dict)
+    local_cidr: str = ""
+    host_posture: object | None = None
+    router_config: object | None = None
     _seen: set = field(default_factory=set, repr=False)
+
+    def stamp(self, key: str, when: float) -> None:
+        """Record when a thing was first and last seen, outside the dedup key."""
+        if not when:
+            return
+        self.first_seen.setdefault(key, when)
+        self.last_seen[key] = when
 
     def add(self, name: str, record) -> bool:
         """Store a record unless it duplicates one already held or the cap is hit.
@@ -207,6 +295,20 @@ class Capture:
         addresses |= {r.source_ip for r in self.router_adverts}
         addresses |= {r.source_ip for r in self.upnp}
         return {address for address in addresses if address}
+
+    def seen_window(self, key: str) -> tuple[float, float]:
+        """First and last sighting of a key, or zeroes if it was never stamped."""
+        return self.first_seen.get(key, 0.0), self.last_seen.get(key, 0.0)
+
+    def bindings(self) -> dict[str, set[str]]:
+        """IP to the set of MACs that claimed it, across every source."""
+        claims: dict[str, set[str]] = {}
+        for record in self.hosts:
+            claims.setdefault(record.ip, set()).add(record.mac)
+        for record in self.arp:
+            if record.claimed_ip and record.claimed_ip != "0.0.0.0":
+                claims.setdefault(record.claimed_ip, set()).add(record.source_mac)
+        return claims
 
     def router_advert_sources(self) -> set[str]:
         """Distinct routers seen advertising, which is what L2P12 counts."""

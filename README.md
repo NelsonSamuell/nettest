@@ -243,6 +243,22 @@ sudo setcap cap_net_raw,cap_net_admin+eip .venv/bin/python3
 | L2P15 | Wireless link encryption | read-only | 0 |
 | L2P16 | Protected management frames, 802.11w | read-only | 0 |
 | L2P17 | WPS advertised | read-only | 0 |
+| L3P01 | Host and address inventory | passive | 0 |
+| L3P02 | Cleartext transport metadata | passive | 0 |
+| L3P03 | Resolver behaviour | passive | 0 |
+| L3P04 | IPv6 addressing mode | passive | 0 |
+| L3P05 | Local discovery surface | passive | 0 |
+| L3P06 | ICMP anomalies | passive | 0 |
+| L3P07 | Outbound destination profile | passive | 0 |
+| L3P08 | Fragmentation observed | passive | 0 |
+| L3P09 | Duplicate address correlation | passive | 0 |
+| L3P10 | Hop count anomaly | passive | 0 |
+| CFG01 | Router config parse | offline | 0 |
+| CFG02 | Local host posture | offline | 0 |
+| CFG03 | Firmware advisory match | offline | 0 |
+
+The layer 3 active checks, `L3A01` through `L3A15`, are not built yet. Their
+controls are in the table and read `UNTESTED`, which is the honest state.
 
 `netcheck doctor` is not a check. It inspects your own machine and sends nothing.
 | L2A01 | DTP trunk negotiation | active | 1 |
@@ -261,7 +277,9 @@ L2A05 and L2A06 need a cooperating listener on the target segment, started with
 
 ## The posture table
 
-Ten controls, each in one of four states.
+Twenty six controls on a wired segment, twenty one on a wireless one, each in one
+of four states. Layer 2 and layer 3 controls are grouped separately, and
+`--layers l2` or `--layers l3` shows one group alone.
 
 - `PRESENT`: a check produced positive evidence the control is enforcing.
 - `ABSENT`: a check produced positive evidence it is not. This is what sets the
@@ -326,6 +344,14 @@ delivery, so without a cooperating observer on the target segment they report
 
 Passive checks only report what arrived during the capture window. A segment
 that was quiet for two minutes has not been shown to be free of anything.
+
+CFG02 describes the machine running the tool, not the network. It has its own
+report section saying so, because a reader skimming a network report will
+otherwise attribute a missing host firewall to the router.
+
+CFG03 compares a detected model against `l2check/data/advisories.json`, which
+ships empty. With no entry for your device the check reports `UNTESTED`, not a
+pass. Filling it in is described in `docs/ADVISORIES.md`.
 
 On a wireless link you see less than on a switch port, and the difference is not
 the tool. Per-station encryption means another client's unicast traffic never

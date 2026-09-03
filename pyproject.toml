@@ -22,5 +22,8 @@ l2check = "l2check.cli:main_l2check"
 [tool.setuptools.packages.find]
 include = ["l2check*"]
 
+[tool.setuptools.package-data]
+l2check = ["data/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

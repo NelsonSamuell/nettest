@@ -14,6 +14,7 @@ from typing import Callable
 from scapy.sendrecv import sniff
 
 from l2check import wireless
+from l2check.l3.config_audit import read_host_posture
 from l2check.models import Capture
 from l2check.parse import parse_frame
 
@@ -73,6 +74,9 @@ def capture(
         result.local_macs.add(own)
     # Read-only, sends nothing, and returns None on a wired interface.
     result.wireless = wireless.read_link(interface)
+    result.local_cidr = interface_cidr(interface)
+    # CFG02 reads this machine, not the network, and sends nothing.
+    result.host_posture = read_host_posture()
     sniff(
         iface=interface,
         timeout=duration,

@@ -1,6 +1,6 @@
 from l2check import posture, report
 from l2check.models import Capture, Finding
-from l2check.posture import ABSENT, PRESENT, UNTESTED, Posture
+from l2check.posture import ABSENT, PRESENT, Posture
 from l2check.session import Budget
 
 
@@ -13,19 +13,26 @@ def board_with_both_layers():
 
 def test_layers_filter_the_control_table():
     board = board_with_both_layers()
-    board.controls[posture.CLIENT_ISOLATION].basis = "L3A09 active check"
     l2_only = report.posture_table(board, layers="l2")
     assert posture.BPDU_GUARD in l2_only
-    assert posture.CLIENT_ISOLATION not in l2_only
+    assert posture.EGRESS_FILTERING not in l2_only
     l3_only = report.posture_table(board, layers="l3")
-    assert posture.CLIENT_ISOLATION in l3_only
+    assert posture.EGRESS_FILTERING in l3_only
     assert posture.BPDU_GUARD not in l3_only
 
 
-def test_both_layers_groups_them():
+def test_layer_grouping_uses_membership_not_the_basis_text():
+    """An untested L3 control has an L2-looking basis and must still group as L3."""
     board = board_with_both_layers()
-    board.controls[posture.CLIENT_ISOLATION].basis = "L3A09 active check"
-    text = report.posture_table(board, layers="both")
+    assert board.controls[posture.EGRESS_FILTERING].basis == "probe not selected"
+    assert posture.EGRESS_FILTERING in report.posture_table(board, layers="l3")
+    # A common control stays at layer 2 even when an L3 check set its basis.
+    board.set(posture.CLIENT_ISOLATION, ABSENT, "L3A09 active check")
+    assert posture.CLIENT_ISOLATION in report.posture_table(board, layers="l2")
+
+
+def test_both_layers_groups_them():
+    text = report.posture_table(board_with_both_layers(), layers="both")
     assert "layer 2:" in text and "layer 3:" in text
 
 
