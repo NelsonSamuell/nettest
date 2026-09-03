@@ -14,13 +14,14 @@ ambiguous. That is an accuracy constraint, not a policy one.
 
 from __future__ import annotations
 
+import errno
 import socket
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
-from scapy.sendrecv import sendp
+from scapy.sendrecv import send, sendp
 
 L2_ACTIVE_CHECKS = (
     "L2A01",
@@ -149,16 +150,106 @@ def _send_frame(interface: str, frame: bytes) -> None:
     sendp(frame, iface=interface, verbose=False)
 
 
+def _send_packet(interface: str, packet) -> None:
+    """Send one IP packet, letting the kernel route and resolve it."""
+    send(packet, iface=interface, verbose=False)
+
+
+OPEN = "open"
+CLOSED = "closed"
+FILTERED = "filtered"
+
+
 def _tcp_connect(address: str, port: int, timeout: float) -> bool:
     """Open and immediately close one TCP connection. True when it was accepted."""
-    connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    return _classify_connect(address, port, timeout) == OPEN
+
+
+def _classify_connect(address: str, port: int, timeout: float) -> str:
+    """Open, closed or filtered, from the errno the connect returned."""
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    connection = socket.socket(family, socket.SOCK_STREAM)
     connection.settimeout(timeout)
     try:
-        return connection.connect_ex((address, port)) == 0
+        code = connection.connect_ex((address, port))
     except OSError:
-        return False
+        return FILTERED
     finally:
         connection.close()
+    if code == 0:
+        return OPEN
+    # ECONNREFUSED means the host answered with a reset; a timeout means
+    # something in the path swallowed it.
+    if code in (errno.ECONNREFUSED, errno.ECONNRESET):
+        return CLOSED
+    if code in (errno.EHOSTUNREACH, errno.ENETUNREACH):
+        return CLOSED
+    return FILTERED
+
+
+def _resolve(name: str) -> str:
+    """Resolve a name to one address, or an empty string."""
+    try:
+        info = socket.getaddrinfo(name, None)
+    except OSError:
+        return ""
+    return info[0][4][0] if info else ""
+
+
+def _read_banner(address: str, port: int, timeout: float) -> str:
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    connection = socket.socket(family, socket.SOCK_STREAM)
+    connection.settimeout(timeout)
+    try:
+        connection.connect((address, port))
+        return connection.recv(256).decode("utf-8", "replace").strip()
+    except OSError:
+        return ""
+    finally:
+        connection.close()
+
+
+def _read_tls(address: str, port: int, timeout: float) -> dict:
+    import ssl
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    # Verification is off on purpose: a self signed certificate on a home router
+    # is the normal case and is itself worth reporting, not an error.
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    raw = socket.socket(family, socket.SOCK_STREAM)
+    raw.settimeout(timeout)
+    try:
+        raw.connect((address, port))
+        with context.wrap_socket(raw) as wrapped:
+            certificate = wrapped.getpeercert(binary_form=False) or {}
+            return {
+                "version": wrapped.version() or "",
+                "cipher": (wrapped.cipher() or ("",))[0],
+                "subject": str(certificate.get("subject", "")),
+                "issuer": str(certificate.get("issuer", "")),
+                "not_after": certificate.get("notAfter", ""),
+                "self_signed": certificate.get("subject") == certificate.get("issuer"),
+            }
+    except OSError as error:
+        return {"error": str(error)}
+    finally:
+        raw.close()
+
+
+def _http_request(url: str, timeout: float, data, headers: dict) -> tuple[int, str]:
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(url, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read(65536).decode("utf-8", "replace")
+    except urllib.error.HTTPError as error:
+        return error.code, error.read(65536).decode("utf-8", "replace")
+    except (OSError, ValueError) as error:
+        return 0, str(error)
 
 
 @dataclass
@@ -222,8 +313,28 @@ class ActiveSession:
     gateway: str | None = None
     observer: str | None = None
     external_observer: str | None = None
+    sweep_targets: list = field(default_factory=list)
+    guest_subnet: str = ""
+    test_host: str = ""
+    authoritative_ns: str = ""
+    wan_address: str = ""
+    tcp_ports: tuple = ()
+    udp_ports: tuple = ()
+    tcp_port_limit: int = 200
+    tcp_hosts: int = 5
+    udp_hosts: int = 3
+    tcp_open: dict = field(default_factory=dict)
+    upnp_control_url: str = ""
+    management_services: list = field(default_factory=list)
+    cleanup_required: str = ""
     sender: Callable[[str, bytes], None] = _send_frame
+    ip_sender: Callable[[str, object], None] = _send_packet
     connector: Callable[[str, int, float], bool] = _tcp_connect
+    classifier: Callable[[str, int, float], str] = None
+    banner_reader: Callable[[str, int, float], str] = None
+    tls_reader: Callable[[str, int, float], dict] = None
+    http_client: Callable = None
+    resolver: Callable[[str], str] = None
     clock: Callable[[], float] = time.monotonic
     sleeper: Callable[[float], None] = time.sleep
     started: bool = False
@@ -241,6 +352,16 @@ class ActiveSession:
         if not selected:
             raise ConfigError("no checks selected")
         validate_rate(self.rate_pps)
+        if self.classifier is None:
+            self.classifier = _classify_connect
+        if self.banner_reader is None:
+            self.banner_reader = _read_banner
+        if self.tls_reader is None:
+            self.tls_reader = _read_tls
+        if self.http_client is None:
+            self.http_client = _http_request
+        if self.resolver is None:
+            self.resolver = _resolve
         self.tests = selected
         self.started = True
         self._started_at = self.clock()
@@ -349,6 +470,68 @@ class ActiveSession:
         for frame in batch:
             self.sender(self.interface, bytes(frame))
         return len(batch)
+
+    def send_ip(self, packets) -> int:
+        """Send IP packets, counted against the layer 3 budget.
+
+        Scapy packets rather than bytes, because the kernel does the routing and
+        address resolution: a layer 3 check should not have to know the next
+        hop's MAC address to ask a question of a host two subnets away.
+        """
+        batch = packets if isinstance(packets, (list, tuple)) else [packets]
+        batch = list(batch)
+        self._permit(len(batch), LAYER3)
+        for packet in batch:
+            self.ip_sender(self.interface, packet)
+        return len(batch)
+
+    def resolve(self, name: str) -> str:
+        """Resolve a configured name to an address, or an empty string.
+
+        Not counted against a budget: it goes through the system resolver like
+        any other name lookup, and it is not a probe of the target.
+        """
+        if not name:
+            return ""
+        try:
+            import ipaddress as _ip
+
+            _ip.ip_address(name)
+            return name
+        except ValueError:
+            return (self.resolver or _resolve)(name)
+
+    def grab_banner(self, address: str, port: int, timeout: float = 3.0) -> str:
+        """Read whatever a service says on connect. Never sends a request.
+
+        The banner is data the service volunteered to a connection this tool
+        opened, so it is addressed to us. Nothing is requested, and no
+        credentials are offered: version detection is the boundary.
+        """
+        self._permit(CONNECT_FRAME_COST, LAYER3)
+        return self.banner_reader(address, port, timeout)
+
+    def tls_details(self, address: str, port: int, timeout: float = 4.0) -> dict:
+        """Negotiate TLS and report the version and certificate, nothing more."""
+        self._permit(CONNECT_FRAME_COST, LAYER3)
+        return self.tls_reader(address, port, timeout)
+
+    def http(self, url: str, timeout: float = 4.0, data: bytes | None = None,
+             headers: dict | None = None) -> tuple[int, str]:
+        """One HTTP request, counted. Returns the status and the body."""
+        self._permit(CONNECT_FRAME_COST, LAYER3)
+        return self.http_client(url, timeout, data, headers or {})
+
+    def connect_result(self, address: str, port: int, timeout: float = 2.0) -> str:
+        """Classify one TCP connection as open, closed or filtered.
+
+        A refused connection and a timed out one are different findings: refused
+        means the host answered and nothing is listening, timed out means
+        something dropped the packet. Collapsing them loses the thing the check
+        exists to measure.
+        """
+        self._permit(CONNECT_FRAME_COST, LAYER3)
+        return self.classifier(address, port, timeout)
 
     def connect(self, address: str, port: int, timeout: float = 2.0) -> bool:
         """Open and close one TCP connection, counted against the caps."""

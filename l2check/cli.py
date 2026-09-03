@@ -94,6 +94,7 @@ def build_parser(prog: str = "netcheck") -> argparse.ArgumentParser:
         default="internal",
         help="which side of the NAT boundary this observer sits on",
     )
+    observer.add_argument("--interface", dest="interface")
 
     rebuild = sub.add_parser("posture", help="rebuild the table from a saved JSON report")
     rebuild.add_argument("--from", dest="source", required=True)
@@ -122,6 +123,41 @@ def build_parser(prog: str = "netcheck") -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+# What each check needs before it can say anything. Checks whose requirement is
+# missing are skipped up front by --all, with a reason, rather than failing
+# halfway through a run.
+REQUIREMENTS = {
+    "L3A05": ("external observer and --wan", lambda c, a: bool(c.external_observer and a.wan)),
+    "L3A07": ("external observer and external.test_host",
+              lambda c, a: bool(c.external_observer and c.external.get("test_host"))),
+    "L3A08": ("external observer", lambda c, a: bool(c.external_observer)),
+    "L3A09": ("guest_subnet and an internal observer",
+              lambda c, a: bool(c.guest_subnet and c.internal_observer)),
+    "L3A10": ("external.authoritative_ns", lambda c, a: bool(c.external.get("authoritative_ns"))),
+    "L3A11": ("external observer and --wan", lambda c, a: bool(c.external_observer and a.wan)),
+    "L3A13": ("external observer and external.test_host",
+              lambda c, a: bool(c.external_observer and c.external.get("test_host"))),
+    "L3A14": ("external observer and external.test_host",
+              lambda c, a: bool(c.external_observer and c.external.get("test_host"))),
+    "L3A15": ("external observer and external.test_host",
+              lambda c, a: bool(c.external_observer and c.external.get("test_host"))),
+    "L2A05": ("--test-ip", lambda c, a: bool(a.test_ip)),
+    "L2A06": ("--target-vlan and --test-ip", lambda c, a: bool(a.target_vlan and a.test_ip)),
+}
+
+
+def supportable(tests: list[str], config, args) -> tuple[list[str], list[tuple[str, str]]]:
+    """Split the selected checks into those this setup can run and those it cannot."""
+    runnable, skipped = [], []
+    for check in tests:
+        requirement = REQUIREMENTS.get(check)
+        if requirement is None or requirement[1](config, args):
+            runnable.append(check)
+        else:
+            skipped.append((check, "needs %s" % requirement[0]))
+    return runnable, skipped
 
 
 def resolve_interface(args) -> str:
@@ -199,6 +235,10 @@ def run_probe(args) -> int:
 
     config = targets_module.load(args.config, args.interface)
     tests = list(ACTIVE_CHECKS) if args.all else parse_tests(args.tests)
+    if args.all:
+        tests, skipped = supportable(tests, config, args)
+        for check, reason in skipped:
+            print("skipping %s: %s" % (check, reason), file=sys.stderr)
     max_macs = validate_max_macs(args.max_macs)
     rate = validate_rate(args.rate or config.limits.rate_pps)
 
@@ -221,6 +261,11 @@ def run_probe(args) -> int:
         frames=args.frame_budget or config.limits.frame_budget,
         packets=args.packet_budget or config.limits.packet_budget,
     )
+    from l2check.l3.probes.discovery import DEFAULT_TCP_PORTS, DEFAULT_UDP_PORTS
+
+    if args.wan:
+        config.wan_address = targets_module.discover_wan(config)
+
     session = ActiveSession(
         interface=args.interface,
         budget=budget,
@@ -233,6 +278,13 @@ def run_probe(args) -> int:
         external_observer=config.external_observer or None,
         local_cidr=listen.interface_cidr(args.interface) or None,
         gateway=config.gateway or None,
+        sweep_targets=config.addresses(include_wan=args.wan),
+        guest_subnet=config.guest_subnet,
+        test_host=config.external.get("test_host", ""),
+        authoritative_ns=config.external.get("authoritative_ns", ""),
+        wan_address=config.wan_address,
+        tcp_ports=DEFAULT_TCP_PORTS,
+        udp_ports=DEFAULT_UDP_PORTS,
     )
     session.start(tests)
     results = probes.run_selected(session, capture)
@@ -270,7 +322,7 @@ def run_doctor(args) -> int:
 
 
 def run_observe(args) -> int:
-    Observer(args.interface, args.port).serve()
+    Observer(args.interface, args.port, args.side).serve()
     return 0
 
 

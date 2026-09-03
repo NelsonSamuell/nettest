@@ -69,7 +69,9 @@ def registry() -> dict[str, Callable[[ActiveSession, Capture], ProbeResult]]:
         vlan_hop,
     )
 
-    return {
+    from l2check.l3.probes import registry_l3
+
+    merged = {
         "L2A01": trunking.run_dtp,
         "L2A02": spanning_tree.run,
         "L2A03": port_security.run,
@@ -81,6 +83,8 @@ def registry() -> dict[str, Callable[[ActiveSession, Capture], ProbeResult]]:
         "L2A09": segment.run_upnp,
         "L2A10": segment.run_gateway_admin,
     }
+    merged.update(registry_l3())
+    return merged
 
 
 def run_selected(
@@ -91,6 +95,8 @@ def run_selected(
     """Run the selected probes in identifier order, stopping at any hard stop."""
     probes = registry()
     results: list[ProbeResult] = []
+    # Declaration order is dependency order: discovery before the checks that
+    # read what it found, and the observer dependent ones last.
     for check in sorted(session.tests, key=ACTIVE_CHECKS.index):
         if check not in probes:
             continue
@@ -101,6 +107,10 @@ def run_selected(
             out("stopping: %s (%s)" % (error, BUDGET_EXHAUSTED))
             break
         except StateChanged as error:
+            out("stopping during %s: %s" % (check, error))
+            break
+        except RuntimeError as error:
+            # A check that could not undo what it did. Halting is the point.
             out("stopping during %s: %s" % (check, error))
             break
     session.current_check = None

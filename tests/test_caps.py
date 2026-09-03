@@ -17,6 +17,8 @@ from l2check.models import Capture
 from l2check.posture import ProbeResult
 
 PROBES_DIR = pathlib.Path("l2check/probes")
+L3_PROBES_DIR = pathlib.Path("l2check/l3/probes")
+ALL_PROBE_DIRS = (PROBES_DIR, L3_PROBES_DIR)
 
 @pytest.fixture
 def gated(tmp_path):
@@ -110,7 +112,8 @@ def test_a_probe_that_expects_a_link_change_may_still_send(gated):
 
 def test_no_probe_module_sends_without_going_through_the_session():
     banned = {"sendp", "send", "sr", "sr1", "srp", "srp1", "sendpfast"}
-    for path in PROBES_DIR.glob("*.py"):
+    for directory in ALL_PROBE_DIRS:
+      for path in directory.glob("*.py"):
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -132,8 +135,8 @@ def test_every_registered_check_is_a_known_identifier():
     assert registered <= set(session_module.ACTIVE_CHECKS)
 
 
-def test_every_layer_2_check_has_exactly_one_implementation():
-    assert sorted(probes.registry()) == sorted(session_module.L2_ACTIVE_CHECKS)
+def test_every_check_identifier_has_exactly_one_implementation():
+    assert sorted(probes.registry()) == sorted(session_module.ACTIVE_CHECKS)
 
 
 def test_the_two_layers_share_no_identifiers():
@@ -362,7 +365,8 @@ def test_gateway_probe_refuses_without_a_gateway(gated):
 
 def test_no_probe_opens_its_own_socket():
     """Probes must reach the network through the session, never directly."""
-    for path in PROBES_DIR.glob("*.py"):
+    for directory in ALL_PROBE_DIRS:
+      for path in directory.glob("*.py"):
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if isinstance(node, (ast.Import, ast.ImportFrom)):

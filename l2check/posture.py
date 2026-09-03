@@ -124,14 +124,21 @@ class Control:
 
 @dataclass
 class ProbeResult:
-    """What one active probe concluded, and how many frames it cost."""
+    """What one active check concluded, and what it cost.
+
+    ``control`` may be None for a check that produces findings and records but
+    owns no control, such as a service inventory. ``segments`` names the pair a
+    reachability test covers, for the matrix.
+    """
 
     check: str
-    control: str
+    control: str | None
     state: str
     basis: str
     detail: str
     frames_sent: int = 0
+    findings: list = field(default_factory=list)
+    segments: tuple | None = None
 
 
 @dataclass
@@ -163,7 +170,9 @@ class Posture:
         self.controls[name] = Control(name, state, basis, detail)
 
     def apply(self, result: ProbeResult) -> None:
-        """Record the outcome of one active probe."""
+        """Record the outcome of one active check, if it owns a control."""
+        if result.control is None:
+            return
         self.set(result.control, result.state, result.basis, result.detail)
 
     def counts(self) -> dict[str, int]:

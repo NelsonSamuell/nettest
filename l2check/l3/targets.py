@@ -8,6 +8,7 @@ the routing table, so a plain LAN run needs no file at all.
 from __future__ import annotations
 
 import ipaddress
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -170,6 +171,36 @@ def load(path: str | Path | None = None, interface: str = "") -> Targets:
 
     targets = _validated(document, str(location) if location.is_file() else "defaults")
     return fill_from_system(targets, interface)
+
+
+def discover_wan(targets: Targets, fetcher=None) -> str:
+    """Find the WAN address from the configured echo service.
+
+    Only runs when an echo service is configured, and the address it returns is
+    excluded from every sweep unless --wan is given.
+    """
+    service = targets.external.get("echo_service", "")
+    if not service:
+        return ""
+    if fetcher is None:
+        import urllib.request
+
+        def fetcher(url):
+            with urllib.request.urlopen(url, timeout=8) as response:
+                return response.read(128).decode("utf-8", "replace")
+
+    try:
+        text = fetcher(service)
+    except Exception:
+        return ""
+    found = re.search(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b", text or "")
+    if not found:
+        return ""
+    try:
+        ipaddress.ip_address(found.group(1))
+    except ValueError:
+        return ""
+    return found.group(1)
 
 
 def fill_from_system(targets: Targets, interface: str = "") -> Targets:
