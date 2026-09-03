@@ -294,7 +294,7 @@ def test_only_l3a07_owns_the_egress_control():
 
 
 def test_a_result_without_a_control_leaves_the_table_alone():
-    from l2check.posture import Posture, ProbeResult, UNTESTED as U
+    from l2check.posture import Posture, ProbeResult
 
     board = Posture.new()
     before = board.counts()
