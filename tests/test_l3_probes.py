@@ -283,3 +283,20 @@ def test_a_resolvable_name_is_used():
     assert made.resolve("vps.example.net") == "198.51.100.9"
     assert made.resolve("198.51.100.9") == "198.51.100.9"
     assert made.resolve("") == ""
+
+
+def test_only_l3a07_owns_the_egress_control():
+    """Three checks touch egress. If they shared a control the last would win."""
+    made = session(test_host="198.51.100.9", resolver=lambda n: "198.51.100.9")
+    assert reachability.run_egress(made, Capture()).control is not None
+    assert reachability.run_fragment_handling(made, Capture()).control is None
+    assert reachability.run_source_routing(made, Capture()).control is None
+
+
+def test_a_result_without_a_control_leaves_the_table_alone():
+    from l2check.posture import Posture, ProbeResult, UNTESTED as U
+
+    board = Posture.new()
+    before = board.counts()
+    board.apply(ProbeResult("L3A14", None, ABSENT, "L3A14", "detail"))
+    assert board.counts() == before

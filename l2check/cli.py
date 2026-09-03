@@ -94,7 +94,6 @@ def build_parser(prog: str = "netcheck") -> argparse.ArgumentParser:
         default="internal",
         help="which side of the NAT boundary this observer sits on",
     )
-    observer.add_argument("--interface", dest="interface")
 
     rebuild = sub.add_parser("posture", help="rebuild the table from a saved JSON report")
     rebuild.add_argument("--from", dest="source", required=True)
@@ -295,6 +294,9 @@ def run_probe(args) -> int:
     from l2check.l3.correlate import correlate, correlation_findings, reachability
 
     devices = correlate(capture, config)
+    # from_capture already correlated the passive data. Active checks can add
+    # hosts, so recompute and replace rather than appending a second copy.
+    findings = [f for f in findings if not f.check.startswith("COR")]
     findings = findings + correlation_findings(devices, board, capture)
     matrix = reachability(capture, results, config)
 

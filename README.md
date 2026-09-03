@@ -172,10 +172,16 @@ netcheck audit                       # offline checks, sends nothing
 The active side and the cooperating observer:
 
 ```
-netcheck probe --interface eth0 --active --tests L2A01,L2A04
+netcheck probe --interface eth0 --active --tests L2A01,L3A02
 netcheck probe --interface eth0 --active --all
 netcheck observe --interface eth0 --port 9001 --side internal
+netcheck observe --interface eth0 --port 9001 --side external
 ```
+
+`--all` runs everything this setup can support and skips the rest up front, with
+a reason, rather than failing halfway through. Checks run in dependency order:
+the passive capture completes first, then discovery, then the checks that read
+what discovery found.
 
 `l2check` remains as an alias that reports the layer 2 control set only.
 `--layers l2|l3|both` selects which controls appear, and `--markdown PATH`
@@ -256,9 +262,26 @@ sudo setcap cap_net_raw,cap_net_admin+eip .venv/bin/python3
 | CFG01 | Router config parse | offline | 0 |
 | CFG02 | Local host posture | offline | 0 |
 | CFG03 | Firmware advisory match | offline | 0 |
+| L3A01 | Host discovery | active | 1 per address |
+| L3A02 | TCP service inventory | active | 200 ports x 5 hosts |
+| L3A03 | UDP service inventory | active | 30 ports x 3 hosts, 1 retry |
+| L3A04 | Management plane exposure | active | a few per service |
+| L3A05 | Inbound reachability, IPv4 | active | observer side |
+| L3A06 | UPnP and NAT-PMP mapping | active | 3 |
+| L3A07 | Egress filtering | active | 43 |
+| L3A08 | Inbound reachability, IPv6 | active | observer side |
+| L3A09 | Guest segmentation | active | 3 |
+| L3A10 | DNS rebinding protection | active | 1 |
+| L3A11 | Resolver scoping | active | observer side |
+| L3A12 | ICMP redirect acceptance | active | 1 |
+| L3A13 | Anti-spoofing | active | 1 |
+| L3A14 | Fragment handling | active | 2 |
+| L3A15 | Source routing | active | 2 |
+| COR01-05 | Correlation findings | derived | 0 |
 
-The layer 3 active checks, `L3A01` through `L3A15`, are not built yet. Their
-controls are in the table and read `UNTESTED`, which is the honest state.
+Eight of the active checks need a cooperating observer and report
+`INDETERMINATE` without one. `docs/OBSERVER.md` covers running one, including on
+a cheap VPS for the checks that need a vantage point outside the NAT boundary.
 
 `netcheck doctor` is not a check. It inspects your own machine and sends nothing.
 | L2A01 | DTP trunk negotiation | active | 1 |

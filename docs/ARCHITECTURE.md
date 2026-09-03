@@ -197,3 +197,31 @@ has a basis of "probe not selected".
 
 L3P02 deliberately emits no finding: L2P11 already reports cleartext between two
 hosts, and the spec calls for the overlap to be merged rather than counted twice.
+
+**Milestone 3, correlation.** `l3/correlate.py` joins the layer 2 MAC inventory
+with the layer 3 IP inventory into a device list, and builds the segment
+reachability matrix. It runs last, after the posture it comments on, and emits
+COR01 to COR05. `report._layer_of` groups by control membership.
+
+Findings are owned once. COR01 owns "one MAC in several subnets"; L3P01 does not
+repeat it, the same way L3P02 does not repeat L2P11.
+
+**Milestones 4 to 6, active layer 3.** `l3/probes/` holds discovery (L3A01 to
+L3A03), management (L3A04, L3A06), host (L3A12) and reachability (the eight that
+need an observer). `registry_l3()` is merged into `probes.registry()`, so both
+layers share one runner and one dependency order.
+
+`ActiveSession` grew the layer 3 route to the network: `send_ip` for scapy
+packets the kernel routes, `connect_result` for the three way open/closed/
+filtered answer, `grab_banner`, `tls_details`, `http` and `resolve`. All are
+injectable and all are counted. The AST invariant tests now cover
+`l2check/l3/probes/` as well, and they caught a stray `import socket` in
+`management.py` during the build.
+
+`ProbeResult` gained `findings` for checks that own no control, and `segments`
+for the reachability matrix. `Posture.apply` skips a result whose control is
+None.
+
+`observe.py` gained sides. An external observer answers `CONNECT host port` with
+open, closed or filtered; an internal one refuses that verb, so a check needing
+an outside vantage point cannot silently get an inside one.

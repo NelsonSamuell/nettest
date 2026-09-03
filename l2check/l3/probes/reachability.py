@@ -15,14 +15,17 @@ L3A11  resolver scoping, needs a guest or external vantage point
 L3A13  anti-spoofing, needs an observer on the far side
 L3A14  fragment handling, needs an observer to confirm arrival
 L3A15  source routing, needs an observer to confirm arrival
+
+L3A14 and L3A15 own no control. They describe how a filter behaves rather than
+whether egress is filtered, which is L3A07's question, and letting them write to
+the same control would mean whichever ran last decided the answer.
 """
 
 from __future__ import annotations
 
 import ipaddress
 
-from scapy.layers.inet import GRE, ICMP, IP, TCP, UDP
-from scapy.layers.inet6 import IPv6
+from scapy.layers.inet import GRE, IP, TCP, UDP
 
 from l2check import frames
 from l2check.l3.probes import sweep
@@ -493,7 +496,7 @@ def run_fragment_handling(session: ActiveSession, capture: Capture) -> ProbeResu
     The transport header is split across the fragment boundary, so a filter that
     matches on ports in the first fragment alone sees nothing to match.
     """
-    target, refusal = _target(session, "L3A14", EGRESS_FILTERING)
+    target, refusal = _target(session, "L3A14", None)
     if refusal is not None:
         return refusal
 
@@ -508,7 +511,7 @@ def run_fragment_handling(session: ActiveSession, capture: Capture) -> ProbeResu
     if not session.external_observer:
         return _no_observer(
             "L3A14",
-            EGRESS_FILTERING,
+            None,
             "a fragmented packet was sent to %s with the transport header split "
             "across the boundary" % target,
             frames_sent=2,
@@ -516,11 +519,11 @@ def run_fragment_handling(session: ActiveSession, capture: Capture) -> ProbeResu
 
     arrived = ask_observer(session.external_observer, marker, OBSERVER_SECONDS)
     if arrived is None:
-        return _unreachable("L3A14", EGRESS_FILTERING, session.external_observer, 2)
+        return _unreachable("L3A14", None, session.external_observer, 2)
     if arrived:
         return ProbeResult(
             "L3A14",
-            EGRESS_FILTERING,
+            None,
             ABSENT,
             "L3A14 active check",
             "a fragmented packet crossed the filter with its transport header "
@@ -549,7 +552,7 @@ def run_fragment_handling(session: ActiveSession, capture: Capture) -> ProbeResu
 
 def run_source_routing(session: ActiveSession, capture: Capture) -> ProbeResult:
     """L3A15. Whether loose or strict source routed packets are accepted."""
-    target, refusal = _target(session, "L3A15", EGRESS_FILTERING)
+    target, refusal = _target(session, "L3A15", None)
     if refusal is not None:
         return refusal
 
@@ -567,18 +570,18 @@ def run_source_routing(session: ActiveSession, capture: Capture) -> ProbeResult:
     if not session.external_observer:
         return _no_observer(
             "L3A15",
-            EGRESS_FILTERING,
+            None,
             "two source routed packets were sent to %s" % target,
             frames_sent=2,
         )
 
     arrived = ask_observer(session.external_observer, marker, OBSERVER_SECONDS)
     if arrived is None:
-        return _unreachable("L3A15", EGRESS_FILTERING, session.external_observer, 2)
+        return _unreachable("L3A15", None, session.external_observer, 2)
     if arrived:
         return ProbeResult(
             "L3A15",
-            EGRESS_FILTERING,
+            None,
             ABSENT,
             "L3A15 active check",
             "source routed packets were forwarded, so the path accepts a sender "

@@ -126,3 +126,19 @@ def test_diff_notices_a_control_that_appeared():
     text = report.diff(before, after)
     assert "new control" in text
     assert "no longer reported" in text
+
+
+def test_correlation_findings_are_not_counted_twice():
+    """from_capture correlates; the probe path must replace, not append."""
+    from l2check.l3.correlate import correlate, correlation_findings
+    from l2check.models import Capture, ServiceAnnouncement
+
+    capture = Capture(
+        services=[ServiceAnnouncement("mDNS", "aa:bb:cc:dd:ee:01", "_ipp._tcp.local")]
+    )
+    board, findings = posture.from_capture(capture, profile=posture.WIRED)
+    assert len([f for f in findings if f.check == "COR05"]) == 1
+
+    stripped = [f for f in findings if not f.check.startswith("COR")]
+    combined = stripped + correlation_findings(correlate(capture), board, capture)
+    assert len([f for f in combined if f.check == "COR05"]) == 1

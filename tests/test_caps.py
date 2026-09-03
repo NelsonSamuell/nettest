@@ -492,3 +492,31 @@ def test_an_unimplemented_check_id_is_skipped_not_crashed(gated):
         del probes.registry
     assert calls == ["L2A01"]
     assert len(results) == 1
+
+
+def test_the_parser_builds_for_every_command():
+    """A duplicate flag only shows up when the parser is actually constructed."""
+    from l2check.cli import build_parser
+
+    parser = build_parser()
+    commands = parser._subparsers._group_actions[0].choices
+    assert set(commands) == {"listen", "probe", "observe", "posture", "audit", "doctor"}
+    for name, sub in commands.items():
+        assert sub.format_help()
+
+
+def test_every_command_parses_a_minimal_invocation():
+    from l2check.cli import build_parser
+
+    parser = build_parser()
+    for argv in (
+        ["listen"],
+        ["listen", "--interface", "eth0", "--duration", "5"],
+        ["probe", "--active", "--tests", "L3A02"],
+        ["probe", "--active", "--all", "--wan"],
+        ["observe", "--interface", "eth0", "--port", "9001", "--side", "external"],
+        ["posture", "--from", "a.json", "--diff", "b.json"],
+        ["audit", "--config", "router.cfg"],
+        ["doctor"],
+    ):
+        assert parser.parse_args(argv)
