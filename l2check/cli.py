@@ -36,9 +36,14 @@ CAPABILITY_HINT = (
     "    sudo setcap cap_net_raw,cap_net_admin+eip %(python)s\n"
     "  Or run %(prog)s's setup script, which does the same thing:\n"
     "    %(setup)s\n"
-    "  This is asked for once. The permission is stored on the binary and "
-    "survives reboots.\n"
-    "  Then check it with: %(prog)s doctor"
+    "  This is asked for once per machine. The permission is an attribute of "
+    "that binary\n"
+    "  on this filesystem, so it survives reboots but is not carried by a "
+    "clone or a fork.\n"
+    "  Then check it with: %(prog)s doctor\n"
+    "\n"
+    "  To run without granting anything, use sudo for this one command:\n"
+    "    sudo %(launcher)s listen"
 )
 
 NO_INTERFACE_HINT = (
@@ -171,11 +176,15 @@ def capability_hint(args) -> str:
     the command can be pasted as printed however the tool was installed.
     """
     root = Path(__file__).resolve().parent.parent
+    prog = getattr(args, "prog", "netcheck")
+    # sudo resets PATH, so the launcher is named by full path to be pasteable.
+    launcher = root / "bin" / prog
     return CAPABILITY_HINT % {
         "interface": getattr(args, "interface", None) or "this interface",
         "python": sys.executable,
-        "prog": getattr(args, "prog", "netcheck"),
+        "prog": prog,
         "setup": root / "setup.sh",
+        "launcher": launcher if launcher.exists() else prog,
     }
 
 

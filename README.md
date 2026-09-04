@@ -154,6 +154,21 @@ The only thing that undoes it is deleting `.venv`, because the capability was
 granted to that directory's own `python3` binary. Rebuild it with `./setup.sh`
 and you will be asked once more.
 
+Run it once **per machine**, not once per checkout. A capability is an extended
+attribute the filesystem holds against that binary; git records only whether a
+file is executable, so no clone, fork or archive carries it. `.venv` is ignored
+anyway, so a fresh checkout has no interpreter to have inherited anything.
+
+If you would rather not grant it on a machine you are only testing on, run the
+one command under sudo instead:
+
+```
+sudo ./bin/netcheck listen
+```
+
+That works with no setup, at the cost of running the whole tool as root rather
+than one binary holding one capability.
+
 Then check it worked:
 
 ```

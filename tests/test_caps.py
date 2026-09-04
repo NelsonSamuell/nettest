@@ -546,3 +546,23 @@ def test_the_permission_error_names_the_command_that_fixes_it():
 def test_no_user_facing_hint_hardcodes_the_wrong_command():
     source = pathlib.Path("l2check/cli.py").read_text()
     assert "'l2check doctor'" not in source
+
+
+def test_the_permission_error_explains_a_clone_does_not_carry_it():
+    """A capability is filesystem metadata, so per machine, not per repository."""
+    from l2check.cli import capability_hint
+
+    class Args:
+        interface = "wlan0"
+        prog = "netcheck"
+
+    text = capability_hint(Args())
+    assert "per machine" in text
+    assert "clone or a fork" in text
+    assert "sudo" in text and "listen" in text
+
+
+def test_the_virtualenv_is_never_tracked_by_git():
+    """If .venv were committed the capability question would get more confusing."""
+    ignored = pathlib.Path(".gitignore").read_text()
+    assert ".venv/" in ignored
