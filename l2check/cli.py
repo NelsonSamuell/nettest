@@ -319,7 +319,7 @@ def run_probe(args) -> int:
 
 
 def run_doctor(args) -> int:
-    print(doctor.report())
+    print(doctor.report(getattr(args, "prog", "netcheck")))
     return 0 if doctor.can_open_raw_socket() else EXIT_INPUT_ERROR
 
 
@@ -362,6 +362,7 @@ def run_posture(args) -> int:
 def main(argv: list[str] | None = None, prog: str = "netcheck") -> int:
     """The netcheck entry point. 0, 1 for an absent control, 2 for an input error."""
     args = build_parser(prog).parse_args(argv)
+    args.prog = prog
     handlers = {
         "listen": run_listen,
         "probe": run_probe,

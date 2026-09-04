@@ -85,5 +85,33 @@ def test_report_suggests_a_command_when_privileged(monkeypatch):
         "interfaces",
         lambda: [Interface("wlan0", "wireless", "up", "192.168.1.5/24", True)],
     )
-    text = doctor.report()
-    assert "l2check listen --interface wlan0" in text
+    text = doctor.report("netcheck")
+    assert "netcheck listen --interface wlan0" in text
+
+
+def test_the_report_names_the_command_you_actually_typed():
+    """Running netcheck must not tell you to type l2check, or the reverse."""
+    assert doctor.report("netcheck").startswith("netcheck environment check")
+    assert doctor.report("l2check").startswith("l2check environment check")
+
+
+def test_the_suggested_next_step_uses_the_same_command(monkeypatch):
+    monkeypatch.setattr(doctor, "can_open_raw_socket", lambda: True)
+    monkeypatch.setattr(
+        doctor,
+        "interfaces",
+        lambda: [Interface("wlan0", "wireless", "up", "192.168.1.5/24", True)],
+    )
+    assert "netcheck listen --interface wlan0" in doctor.report("netcheck")
+    assert "l2check listen --interface wlan0" in doctor.report("l2check")
+
+
+def test_both_console_scripts_are_declared():
+    """setup.sh links whatever bin/ holds; pyproject must declare both."""
+    import pathlib
+
+    text = pathlib.Path("pyproject.toml").read_text()
+    assert 'netcheck = "l2check.cli:main"' in text
+    assert 'l2check = "l2check.cli:main_l2check"' in text
+    for name in ("netcheck", "l2check"):
+        assert pathlib.Path("bin", name).is_file(), "bin/%s missing" % name

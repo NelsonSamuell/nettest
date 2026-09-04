@@ -96,9 +96,13 @@ def _module_version(name: str) -> str:
     return getattr(module, "__version__", "present")
 
 
-def report() -> str:
-    """Render the environment check as plain text."""
-    lines = ["l2check environment check", ""]
+def report(prog: str = "netcheck") -> str:
+    """Render the environment check as plain text.
+
+    The command name is passed in rather than hardcoded, so running this through
+    the l2check alias does not tell you to type netcheck, or the reverse.
+    """
+    lines = ["%s environment check" % prog, ""]
 
     raw = can_open_raw_socket()
     checks = [
@@ -133,8 +137,12 @@ def report() -> str:
     if not raw:
         lines.append("Next step: run ./setup.sh, then try this check again.")
     elif suggested:
-        lines.append("Next step: l2check listen --interface %s --duration 60" % suggested)
-        lines.append("Or just: l2check listen   (it picks %s on its own)" % suggested)
+        lines.append(
+            "Next step: %s listen --interface %s --duration 60" % (prog, suggested)
+        )
+        lines.append(
+            "Or just: %s listen   (it picks %s on its own)" % (prog, suggested)
+        )
     else:
         lines.append("Next step: connect an interface, then run this check again.")
     return "\n".join(lines)
