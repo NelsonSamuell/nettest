@@ -31,13 +31,18 @@ EXIT_ABSENT = 1
 EXIT_INPUT_ERROR = 2
 
 CAPABILITY_HINT = (
-    "no permission to read frames on %s.\n"
-    "  Run ./setup.sh once to grant this to the project only, then try again.\n"
-    "  Run 'l2check doctor' to see what is missing."
+    "no permission to read frames on %(interface)s.\n"
+    "  Grant it once, to this project's python only:\n"
+    "    sudo setcap cap_net_raw,cap_net_admin+eip %(python)s\n"
+    "  Or run %(prog)s's setup script, which does the same thing:\n"
+    "    %(setup)s\n"
+    "  This is asked for once. The permission is stored on the binary and "
+    "survives reboots.\n"
+    "  Then check it with: %(prog)s doctor"
 )
 
 NO_INTERFACE_HINT = (
-    "no usable interface found. Run 'l2check doctor' to see what is available, "
+    "no usable interface found. Run '%s doctor' to see what is available, "
     "or name one with --interface"
 )
 
@@ -159,13 +164,28 @@ def supportable(tests: list[str], config, args) -> tuple[list[str], list[tuple[s
     return runnable, skipped
 
 
+def capability_hint(args) -> str:
+    """The permission error, naming the exact command that fixes it.
+
+    The path is worked out from the running interpreter rather than assumed, so
+    the command can be pasted as printed however the tool was installed.
+    """
+    root = Path(__file__).resolve().parent.parent
+    return CAPABILITY_HINT % {
+        "interface": getattr(args, "interface", None) or "this interface",
+        "python": sys.executable,
+        "prog": getattr(args, "prog", "netcheck"),
+        "setup": root / "setup.sh",
+    }
+
+
 def resolve_interface(args) -> str:
     """Return the interface to use, picking a sensible one when none was named."""
     if getattr(args, "interface", None):
         return args.interface
     chosen = doctor.suggested_interface()
     if not chosen:
-        raise ConfigError(NO_INTERFACE_HINT)
+        raise ConfigError(NO_INTERFACE_HINT % getattr(args, "prog", "netcheck"))
     print("using interface %s" % chosen, file=sys.stderr)
     return chosen
 
@@ -377,8 +397,7 @@ def main(argv: list[str] | None = None, prog: str = "netcheck") -> int:
         print("error: %s" % error, file=sys.stderr)
         return EXIT_INPUT_ERROR
     except PermissionError:
-        target = getattr(args, "interface", None) or "this interface"
-        print("error: " + CAPABILITY_HINT % target, file=sys.stderr)
+        print("error: " + capability_hint(args), file=sys.stderr)
         return EXIT_INPUT_ERROR
     except KeyboardInterrupt:
         return EXIT_INPUT_ERROR

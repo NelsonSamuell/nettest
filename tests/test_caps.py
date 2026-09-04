@@ -520,3 +520,29 @@ def test_every_command_parses_a_minimal_invocation():
         ["doctor"],
     ):
         assert parser.parse_args(argv)
+
+
+def test_the_permission_error_names_the_command_that_fixes_it():
+    """The message must be pasteable, and must name the command actually typed."""
+    from l2check.cli import capability_hint
+
+    class Args:
+        interface = "wlan0"
+        prog = "netcheck"
+
+    text = capability_hint(Args())
+    assert "sudo setcap cap_net_raw,cap_net_admin+eip" in text
+    assert ".venv/bin/python3" in text or "python" in text
+    assert "netcheck doctor" in text
+    assert "l2check doctor" not in text
+
+    class L2Args:
+        interface = "eth0"
+        prog = "l2check"
+
+    assert "l2check doctor" in capability_hint(L2Args())
+
+
+def test_no_user_facing_hint_hardcodes_the_wrong_command():
+    source = pathlib.Path("l2check/cli.py").read_text()
+    assert "'l2check doctor'" not in source
