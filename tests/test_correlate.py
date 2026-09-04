@@ -180,3 +180,28 @@ def test_devices_serialise_for_the_json_report():
     as_dict = device.as_dict()
     assert as_dict["macs"] == ["aa:bb:cc:dd:ee:01"]
     assert "services_announced" in as_dict
+
+
+def test_no_real_hardware_address_is_committed():
+    """Fixtures must use the RFC 7042 documentation range, never a real device.
+
+    A MAC is a globally unique hardware identifier. One captured from the
+    machine a tool was written on does not belong in a public repository.
+    """
+    import pathlib
+    import re
+
+    documentation = re.compile(r"^00:00:5e:00:53:[0-9a-f]{2}$", re.IGNORECASE)
+    allowed_prefixes = ("00:00:5e", "02:", "aa:", "ba:", "cc:", "de:", "3c:22:fb",
+                        "ff:ff:ff", "01:00:5e", "01:80:c2", "33:33:00", "00:11:22",
+                        "00:00:0c", "01:00:0c", "00:00:00")
+    pattern = re.compile(r"\b([0-9a-f]{2}(?::[0-9a-f]{2}){5})\b", re.IGNORECASE)
+
+    for path in list(pathlib.Path("tests").glob("*.py")) + list(
+        pathlib.Path("l2check").rglob("*.py")
+    ):
+        for found in pattern.findall(path.read_text()):
+            lowered = found.lower()
+            assert documentation.match(lowered) or lowered.startswith(allowed_prefixes), (
+                "%s contains %s, which looks like a real MAC" % (path, found)
+            )
