@@ -141,11 +141,18 @@ Run the setup script once:
 ./setup.sh
 ```
 
-It creates a virtual environment in `.venv`, installs l2check into it, grants
-that environment permission to read frames, and links `netcheck` and `l2check` into
-`~/.local/bin` so it works from any directory. It asks for `sudo` once, for the
-permission step alone. Running it again is safe and skips whatever is already
-done.
+It creates a virtual environment in `.venv`, installs the tool into it, grants
+that environment permission to read frames, and links `netcheck` and `l2check`
+into `~/.local/bin` so they work from any directory.
+
+It asks for `sudo` exactly once, for the permission step alone, and never again.
+A file capability is an attribute stored on disk beside the binary, like a
+permission bit: it survives reboots, logins and package upgrades. Running
+`setup.sh` again is safe and skips every step already done, including that one.
+
+The only thing that undoes it is deleting `.venv`, because the capability was
+granted to that directory's own `python3` binary. Rebuild it with `./setup.sh`
+and you will be asked once more.
 
 Then check it worked:
 

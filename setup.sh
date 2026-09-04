@@ -34,14 +34,19 @@ say "installing l2check"
 # is much narrower than running the whole tool as root, and narrower than
 # granting it to the system python, which would give every python script on the
 # machine the same access.
+#
+# This is asked for once. A file capability is an attribute stored on disk with
+# the binary, so it survives reboots and logins. It is only needed again if the
+# virtual environment is deleted and rebuilt, and this script notices that.
 NEEDED="cap_net_raw,cap_net_admin+eip"
 if getcap "$VENV/bin/python3" 2>/dev/null | grep -q cap_net_raw; then
     say "frame access already granted"
 elif ! command -v setcap >/dev/null 2>&1; then
     say "setcap not found. Install it with: sudo apt install libcap2-bin"
     say "then run this script again."
-elif sudo setcap "$NEEDED" "$VENV/bin/python3"; then
-    say "frame access granted"
+elif sudo setcap "$NEEDED" "$VENV/bin/python3" && \
+     getcap "$VENV/bin/python3" 2>/dev/null | grep -q cap_net_raw; then
+    say "frame access granted, once. You will not be asked for this again."
 else
     # Not fatal: the rest of the setup is still worth finishing, and the tool
     # says clearly what is missing when a capture is attempted.
@@ -63,7 +68,11 @@ for name in $LINKS; do
 done
 
 say ""
-say "Setup done. Check it worked:"
+if getcap "$VENV/bin/python3" 2>/dev/null | grep -q cap_net_raw; then
+    say "Setup done, and it does not need running again. Check it worked:"
+else
+    say "Setup incomplete: frame access is still missing. Check with:"
+fi
 case ":$PATH:" in
     *":$HOME/.local/bin:"*) say "  netcheck doctor" ;;
     *) say "  $HERE/bin/netcheck doctor"

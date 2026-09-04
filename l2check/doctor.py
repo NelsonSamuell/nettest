@@ -114,7 +114,8 @@ def report(prog: str = "netcheck") -> str:
         ("iw", "present" if shutil.which("iw") else "missing", bool(shutil.which("iw")),
          "only needed for the wireless checks: apt install iw"),
         ("frame access", "available" if raw else "not permitted", raw,
-         "run ./setup.sh once to grant it to this project only"),
+         "run ./setup.sh once. It is granted permanently to this project's "
+         "python, not per session, so you are asked for sudo one time"),
     ]
     for name, value, ok, hint in checks:
         lines.append("  %-14s %-12s %s" % (name, value, "ok" if ok else "PROBLEM"))
@@ -135,7 +136,10 @@ def report(prog: str = "netcheck") -> str:
     lines.append("")
     suggested = suggested_interface()
     if not raw:
-        lines.append("Next step: run ./setup.sh, then try this check again.")
+        lines.append(
+            "Next step: run ./setup.sh once, then try this check again. The "
+            "permission it grants is permanent, so this is a one time step."
+        )
     elif suggested:
         lines.append(
             "Next step: %s listen --interface %s --duration 60" % (prog, suggested)
