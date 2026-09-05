@@ -117,17 +117,42 @@ def test_a_budget_exhausted_check_is_skipped_not_reported_absent():
     assert posture.controls["Egress filtering"].state == "UNTESTED"
 
 
-def test_no_module_sends_before_the_profile_gate_has_passed():
-    """No check package exists yet, and nothing outside it may reach the wire."""
-    senders = {"sendp", "sr", "sr1", "srp", "srp1", "sendpfast"}
+PLATFORM = SOURCE / "platform"
+SENDERS = {"sendp", "send", "sr", "sr1", "srp", "srp1", "sendpfast", "sniff", "AsyncSniffer"}
+
+
+def test_only_the_platform_layer_touches_a_sending_primitive():
+    """Sending is a platform concern. Everywhere else goes through the context."""
     for path in SOURCE.rglob("*.py"):
+        if PLATFORM in path.parents or path.name == "observe.py":
+            continue
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if isinstance(node, (ast.Import, ast.ImportFrom)):
-                names = {alias.name.split(".")[0] for alias in node.names}
-                assert not (names & senders), "%s imports a sender" % path
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                assert node.func.id not in senders, "%s calls %s" % (path, node.func.id)
+                names = {alias.name for alias in node.names}
+                assert not (names & SENDERS), "%s imports %s" % (path, names & SENDERS)
+
+
+def test_no_check_module_sends_without_going_through_the_context():
+    """A check can only ask the context, which is where the budgets live."""
+    for path in (SOURCE / "l2" / "probes").glob("*.py"):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr in ("send_frames", "collect", "ask_observer"):
+                    assert isinstance(node.func.value, ast.Name), str(path)
+                    assert node.func.value.id == "context", (
+                        "%s reaches the network outside the context" % path
+                    )
+
+
+def test_a_check_cannot_send_before_the_context_is_started():
+    from netcheck.registry import Context, NotStarted
+
+    made = Context(interface="lo", budget=Budget())
+    made.sender = lambda i, f: pytest.fail("must not send")
+    with pytest.raises(NotStarted):
+        made.send_frames(b"\x00" * 60)
 
 
 def test_the_forbidden_techniques_appear_nowhere_in_the_source():

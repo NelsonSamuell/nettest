@@ -8,6 +8,7 @@ fixed, the second tells the operator what command to run.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -119,6 +120,108 @@ class Registry:
                     continue
             runnable.append(identifier)
         return runnable, skipped
+
+
+@dataclass
+class Context:
+    """What a check is given, and the only route it has to the network.
+
+    A check can ask this to send. It has no other way, so the budgets, the send
+    rate and the abort watcher cannot be bypassed by a check getting it wrong.
+    """
+
+    interface: str = ""
+    config: object = None
+    budget: object = None
+    abort: object = None
+    capabilities: CapabilitySet = field(default_factory=CapabilitySet)
+    profile: object = None
+    capture: object = None
+    test_ip: str = ""
+    observer: str = ""
+    max_macs: int = 50
+    started: bool = False
+    sender: Callable[[str, bytes], None] | None = None
+    collector: Callable | None = None
+    observer_query: Callable | None = None
+    clock: Callable[[], float] = time.monotonic
+    sleeper: Callable[[float], None] = time.sleep
+    expect_link_change: bool = False
+    _last_send: float | None = None
+
+    def start(self) -> None:
+        """Open the route to the network. Called once, after every gate passed."""
+        self.started = True
+
+    def _pace(self, count: int) -> None:
+        """Hold the configured send rate. This limit is never overridable."""
+        rate = getattr(self.budget, "rate_pps", 0) or 0
+        if rate <= 0:
+            return
+        interval = count / float(rate)
+        # A monotonic clock can legitimately read 0.0, so the first send is
+        # identified by the sentinel rather than by a falsy timestamp.
+        if self._last_send is not None:
+            elapsed = self.clock() - self._last_send
+            if elapsed < interval:
+                self.sleeper(interval - elapsed)
+        self._last_send = self.clock()
+
+    def send_frames(self, frames) -> int:
+        """Transmit frames, counted against the layer 2 budget."""
+        from netcheck.budget import LAYER2
+
+        if not self.started:
+            raise NotStarted("nothing may be sent before the context is started")
+        batch = [frames] if isinstance(frames, (bytes, bytearray)) else list(frames)
+        if self.abort is not None:
+            self.abort.expect_link_change = self.expect_link_change
+            self.abort.check()
+        self.budget.spend(LAYER2, len(batch))
+        self._pace(len(batch))
+        sender = self.sender or _default_sender
+        for frame in batch:
+            sender(self.interface, bytes(frame))
+        return len(batch)
+
+    def collect(self, seconds: float, match):
+        """Listen for matching replies while a check is sending."""
+        collector = self.collector or _default_collector
+        return collector(self.interface, seconds, match)
+
+    def ask_observer(self, token: str, timeout: float = 5.0):
+        """Whether the observer saw a token, or None if it could not be reached.
+
+        Routed through the context for the same reason sending is: it is the
+        one place a check reaches anything outside itself, and it keeps the
+        query out of the checks so they stay testable without a socket.
+        """
+        if not self.observer:
+            return None
+        asker = self.observer_query or _default_observer_query
+        return asker(self.observer, token, timeout)
+
+
+class NotStarted(Exception):
+    """A send was attempted before the context was started."""
+
+
+def _default_sender(interface: str, frame: bytes) -> None:
+    from netcheck.platform.sockets import send_frame
+
+    send_frame(interface, frame)
+
+
+def _default_observer_query(endpoint: str, token: str, timeout: float):
+    from netcheck.observe import ask_seen
+
+    return ask_seen(endpoint, token, timeout)
+
+
+def _default_collector(interface: str, seconds: float, match):
+    from netcheck.platform.sockets import collect_frames
+
+    return collect_frames(interface, seconds, match)
 
 
 REGISTRY = Registry()

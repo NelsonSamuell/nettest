@@ -97,3 +97,44 @@ def probe_socket_l4() -> ProbeResult:
         return ProbeResult(False, how, _privilege_error(error), str(error))
     handle.close()
     return ProbeResult(True, how)
+
+
+def send_frame(interface: str, frame: bytes) -> None:
+    """Put one Ethernet frame on the wire. The capture library handles the
+    platform difference between AF_PACKET, BPF and Npcap."""
+    from scapy.sendrecv import sendp
+
+    sendp(frame, iface=interface, verbose=False)
+
+
+def capture_frames(interface: str, seconds: float, handler, match=None) -> None:
+    """Capture for a fixed time, handing each frame to the handler.
+
+    store is False, so a frame is dissected and discarded. Nothing accumulates
+    and nothing is written.
+    """
+    from scapy.sendrecv import sniff
+
+    sniff(
+        iface=interface,
+        timeout=seconds,
+        store=False,
+        prn=handler,
+        lfilter=match,
+    )
+
+
+def collect_frames(interface: str, seconds: float, match) -> list:
+    """Capture matching frames in the background and return them.
+
+    Only frames the check asked for are kept, in memory, for the length of the
+    check. Nothing is written to disk.
+    """
+    from scapy.sendrecv import AsyncSniffer
+
+    collected: list = []
+    sniffer = AsyncSniffer(
+        iface=interface, store=False, lfilter=match, prn=collected.append
+    )
+    sniffer.start()
+    return collected, sniffer

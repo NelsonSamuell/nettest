@@ -15,14 +15,14 @@ import sys
 from pathlib import Path
 
 from netcheck import __version__, config as config_module, doctor, report
-from netcheck.abort import AbortWatcher
+from netcheck.abort import AbortWatcher, StateChanged
 from netcheck.authorisation import check_scope, confirm_segment
 from netcheck.authorisation import load as load_authorisation
-from netcheck.budget import Budget, validate_max_macs
+from netcheck.budget import Budget, CapExceeded, validate_max_macs
 from netcheck.models import MAX_MACS_DEFAULT, Posture
 from netcheck.platform.detect import detect
 from netcheck.profile import ConfigError, parse_profile
-from netcheck.registry import REGISTRY, skipped_controls
+from netcheck.registry import REGISTRY, Context, skipped_controls
 
 EXIT_ABSENT = 1
 EXIT_INPUT_ERROR = 2
@@ -91,6 +91,15 @@ def build_parser(prog: str = "netcheck") -> argparse.ArgumentParser:
     return parser
 
 
+def registry() -> "object":
+    """The registry with every built check registered. Layer 2 so far."""
+    from netcheck.l2 import register
+
+    if not REGISTRY.checks:
+        register(REGISTRY)
+    return REGISTRY
+
+
 def resolve_interface(args) -> str:
     """The named interface, or the one holding the default route."""
     from netcheck.platform import interfaces as interfaces_module
@@ -138,23 +147,15 @@ def _metadata(started: datetime.datetime, interface: str = "") -> dict:
     }
 
 
-def _empty_run(args, profile, configuration, interface: str = "") -> int:
-    """A run with no checks registered yet. Everything reports UNTESTED."""
-    started = datetime.datetime.now(datetime.timezone.utc)
-    capabilities = detect()
-    posture = Posture.new()
-    _, skipped = REGISTRY.resolve(REGISTRY.identifiers(), capabilities)
-    skipped_controls(skipped, REGISTRY, posture)
-
+def _finish(args, profile, configuration, posture, findings, interface, **extra) -> int:
+    started = extra.pop("started", datetime.datetime.now(datetime.timezone.utc))
     metadata = _metadata(started, interface)
     document = report.to_dict(
-        posture, [], profile, configuration, metadata=metadata
+        posture, findings, profile, configuration, metadata=metadata, **extra
     )
     text = report.render(
-        posture,
-        [],
-        profile,
-        configuration,
+        posture, findings, profile, configuration,
+        authorisation=extra.get("authorisation"),
         layers=getattr(args, "layers", "both"),
         metadata=metadata,
     )
@@ -162,17 +163,42 @@ def _empty_run(args, profile, configuration, interface: str = "") -> int:
     return posture.exit_code()
 
 
+def _passive(interface: str, duration: int, capabilities, posture):
+    """Capture and fold in the result, or record why capture was impossible."""
+    from netcheck.l2 import apply_passive, findings as l2_findings
+    from netcheck.l2.listen import listen
+    from netcheck.l2.parse import Capture
+
+    known = registry()
+    passive = [i for i in known.identifiers() if known.checks[i].is_passive]
+    runnable, skipped = known.resolve(passive, capabilities)
+    skipped_controls(skipped, known, posture)
+    if not runnable:
+        return Capture(interface=interface, duration=duration), []
+
+    capture = listen(interface, duration)
+    apply_passive(posture, capture)
+    return capture, report.sort_findings(l2_findings(capture))
+
+
 def run_listen(args) -> int:
     interface = resolve_interface(args)
     profile = parse_profile("self")
     configuration = config_module.load(args.config, interface)
-    return _empty_run(args, profile, configuration, interface)
+    started = datetime.datetime.now(datetime.timezone.utc)
+    posture = Posture.new()
+    capture, findings = _passive(interface, args.duration, detect(), posture)
+    return _finish(
+        args, profile, configuration, posture, findings, interface,
+        started=started, capture=capture.as_dict(),
+    )
 
 
 def run_audit(args) -> int:
     profile = parse_profile("self")
     configuration = config_module.load(None)
-    return _empty_run(args, profile, configuration)
+    posture = Posture.new()
+    return _finish(args, profile, configuration, posture, [], "")
 
 
 def run_probe(args) -> int:
@@ -212,7 +238,7 @@ def run_probe(args) -> int:
     if not args.all and not (args.tests or "").strip():
         raise ConfigError("--tests is required unless --all is given")
 
-    diagnosis = doctor.diagnose(args.config, REGISTRY)
+    diagnosis = doctor.diagnose(args.config, registry())
     refusal = doctor.refuses_active(diagnosis)
     if refusal:
         raise ConfigError(refusal)
@@ -236,24 +262,66 @@ def run_probe(args) -> int:
 
     started = datetime.datetime.now(datetime.timezone.utc)
     posture = Posture.new()
-    _, skipped = REGISTRY.resolve(REGISTRY.identifiers(), detect(), budget)
-    skipped_controls(skipped, REGISTRY, posture)
+    capabilities = detect()
+    capture, findings = _passive(interface, args.duration, capabilities, posture)
 
-    metadata = _metadata(started, interface)
-    document = report.to_dict(
-        posture, [], profile, configuration, authorisation, budget,
-        abort=watcher.as_dict(), metadata=metadata,
+    known = registry()
+    selected = (
+        [i for i in known.identifiers() if not known.checks[i].is_passive]
+        if args.all
+        else [t.strip().upper() for t in args.tests.split(",") if t.strip()]
     )
-    text = report.render(
-        posture, [], profile, configuration, authorisation,
-        layers=args.layers, metadata=metadata,
+    unknown = [i for i in selected if i not in known.checks]
+    if unknown:
+        raise ConfigError(
+            "unknown check identifier: %s. Known checks: %s"
+            % (", ".join(unknown), ", ".join(known.identifiers()))
+        )
+
+    runnable, skipped = known.resolve(selected, capabilities, budget)
+    skipped_controls(skipped, known, posture)
+    for entry in skipped:
+        print("skipping %s: %s %s" % (entry.identifier, entry.reason, entry.detail),
+              file=sys.stderr)
+
+    context = Context(
+        interface=interface, config=configuration, budget=budget, abort=watcher,
+        capabilities=capabilities, profile=profile, capture=capture,
+        test_ip=args.test_ip or "", observer=configuration.internal_observer,
+        max_macs=args.max_macs,
     )
-    _emit(document, text, args)
-    return posture.exit_code()
+    context.start()
+
+    for identifier in runnable:
+        check = known.checks[identifier]
+        if check.run is None:
+            continue
+        watcher.current_check = identifier
+        try:
+            state, basis, detail = check.run(context)
+        except CapExceeded as error:
+            print("stopping: %s" % error, file=sys.stderr)
+            break
+        except StateChanged as error:
+            print("stopping during %s: %s" % (error.during, error.detail), file=sys.stderr)
+            break
+        for control in check.controls:
+            posture.set(control, state, basis, detail)
+    watcher.current_check = None
+
+    return _finish(
+        args, profile, configuration, posture, findings, interface,
+        started=started, authorisation=authorisation, budget=budget,
+        abort=watcher.as_dict(), capture=capture.as_dict(),
+    )
 
 
 def run_observe(args) -> int:
-    raise ConfigError("the observer is not built yet")
+    from netcheck.observe import Observer
+
+    interface = resolve_interface(args)
+    Observer(interface, args.port, args.side).serve()
+    return 0
 
 
 def run_posture(args) -> int:
@@ -274,7 +342,7 @@ def run_posture(args) -> int:
 
 
 def run_doctor(args) -> int:
-    diagnosis = doctor.diagnose(args.config, REGISTRY)
+    diagnosis = doctor.diagnose(args.config, registry())
     if args.json:
         print(report.to_json(diagnosis.as_dict()))
     else:

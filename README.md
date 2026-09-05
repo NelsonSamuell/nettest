@@ -178,9 +178,51 @@ reason `cgnat`, never PRESENT.
 Test when nobody else needs the network. The active checks will drop the
 connection at least once.
 
+## Checks
+
+| ID | Title | Mode |
+| --- | --- | --- |
+| L2P01 | Discovery protocol disclosure | passive |
+| L2P02 | Dynamic trunking negotiation offered | passive |
+| L2P03 | Spanning tree BPDUs on an access port | passive |
+| L2P04 | VTP frames observed | passive |
+| L2P05 | Native VLAN is the default | passive |
+| L2P06 | 802.1Q tagged frames on an access port | passive |
+| L2P07 | Multiple DHCP servers observed | passive |
+| L2P08 | Gratuitous ARP anomalies | passive |
+| L2P09 | Name resolution poisoning surface | passive |
+| L2P10 | First-hop redundancy without authentication | passive |
+| L2P11 | Cleartext management protocols | passive |
+| L2P12 | Router advertisements observed | passive |
+| L2P13 | Service announcement surface | passive |
+| L2A01 | DTP trunk negotiation | active, 1 frame |
+| L2A02 | BPDU Guard verification | active, 1 frame |
+| L2A03 | Port security threshold | active, up to 50, cap 500 |
+| L2A04 | DHCP snooping | active, 1 frame |
+| L2A05 | Dynamic ARP Inspection | active, 1 frame |
+| L2A06 | Double tagging reachability | active, 3 frames |
+| L2A07 | Discovery protocol injection | active, 1 frame |
+| L2A08 | Client isolation | active, 2 frames |
+| L2A09 | Switch management plane reachable | active, 2 frames |
+
+L2A05, L2A06 and L2A08 need an observer and report INDETERMINATE without one.
+
+## The observer
+
+```
+netcheck observe --interface <iface> --port 9001 --side internal
+```
+
+It records only the marker tokens the checks emit, never frame payloads, and
+answers `SEEN <token>` and `SIDE`. Run it on the host or segment a check is
+trying to reach.
+
 ## Status
 
-Milestone 1 of six is built: the platform capability layer, the posture model,
-config discovery, profiles, both budgets, the abort watcher, the check registry,
-the report, `doctor`, packaging and continuous integration. No checks are
-registered yet, so every control reports UNTESTED with reason `not_selected`.
+Milestones 1 and 2 of six are built: the platform capability layer, the posture
+model, config discovery, profiles, both budgets, the abort watcher, the check
+registry, the report, `doctor`, packaging, continuous integration, every layer 2
+check, the internal observer and lab stage 1.
+
+The layer 3 and offline checks are not built, so their controls report UNTESTED
+with reason `not_selected`.

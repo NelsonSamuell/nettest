@@ -211,6 +211,7 @@ def to_dict(
     devices: Iterable[dict] | None = None,
     host: dict | None = None,
     abort: dict | None = None,
+    capture: dict | None = None,
     metadata: dict | None = None,
 ) -> dict:
     """The machine form. Keys here are a contract."""
@@ -237,6 +238,8 @@ def to_dict(
         document["host"] = host
     if abort is not None:
         document["abort"] = abort
+    if capture is not None:
+        document["capture"] = capture
     if metadata:
         document.update(metadata)
     return document
