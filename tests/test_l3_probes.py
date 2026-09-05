@@ -421,9 +421,11 @@ def test_guest_segmentation_reports_each_question_separately():
 
 
 def test_guest_segmentation_present_when_nothing_is_reachable():
+    """Nothing reachable means filtered. Closed would mean the packet arrived."""
     config = config_with(guest_subnet="10.40.0.0/24",
                          observers={"internal": "10.20.0.20:9001"})
-    made = observer_context(config=config, ports={})
+    made = observer_context(config=config)
+    made.classifier = lambda a, p, t: "filtered"
     state, _, _, _ = segmentation.run(made)
     assert state == PRESENT
 
@@ -439,3 +441,36 @@ def test_every_control_can_reach_a_non_untested_state():
             owners.setdefault(control, []).append(identifier)
     missing = [name for name, _, _ in CONTROL_TABLE if name not in owners]
     assert missing == [], "no check can establish: %s" % missing
+
+
+def test_a_refused_connection_counts_as_having_reached_the_lan():
+    """A reset means the packet arrived. Reading that as isolation is a false PRESENT."""
+    config = config_with(guest_subnet="10.40.0.0/24",
+                         observers={"internal": "10.20.0.20:9001"})
+    made = observer_context(config=config)
+    made.classifier = lambda a, p, t: "closed"
+    state, _, _, _ = segmentation.run(made)
+    assert state == ABSENT
+
+    made.classifier = lambda a, p, t: "filtered"
+    assert segmentation.run(made)[0] == PRESENT
+
+
+def test_no_route_is_filtered_not_closed():
+    """Closed must mean reached and refused, or L3A02 cannot tell them apart."""
+    import errno
+    from unittest import mock
+
+    from netcheck.platform import sockets
+
+    for code, expected in (
+        (0, "open"),
+        (errno.ECONNREFUSED, "closed"),
+        (errno.ECONNRESET, "closed"),
+        (errno.EHOSTUNREACH, "filtered"),
+        (errno.ENETUNREACH, "filtered"),
+        (errno.ETIMEDOUT, "filtered"),
+    ):
+        with mock.patch("socket.socket") as made:
+            made.return_value.connect_ex.return_value = code
+            assert sockets.classify_connect("192.0.2.1", 80, 0.1) == expected, code

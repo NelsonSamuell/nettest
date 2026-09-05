@@ -165,7 +165,10 @@ def classify_connect(address: str, port: int, timeout: float) -> str:
         connection.close()
     if code == 0:
         return "open"
-    if code in (errno.ECONNREFUSED, errno.ECONNRESET, errno.EHOSTUNREACH, errno.ENETUNREACH):
+    # Refused means the packet reached the host and it answered with a reset.
+    # No route means it never got there. Those are different findings and a
+    # check that conflates them cannot tell reachability from isolation.
+    if code in (errno.ECONNREFUSED, errno.ECONNRESET):
         return "closed"
     return "filtered"
 

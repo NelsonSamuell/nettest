@@ -54,7 +54,9 @@ def run(context):
             config.gateway, ADMIN_PORT
         )
 
-    reachable = [name for name, state in answers.items() if state == "open"]
+    # Closed counts as reached: a reset means the packet arrived and the host
+    # refused it, which is a segmentation failure just as much as an open port.
+    reachable = [name for name, state in answers.items() if state in ("open", "closed")]
     detail = "from the guest segment: " + ", ".join(
         "%s %s" % (name, state) for name, state in sorted(answers.items())
     )
