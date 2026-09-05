@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "updated": "",
+  "source": "",
+  "note": "Curate this yourself. It ships empty on purpose: entries invented rather than researched would make CFG03 report findings that are not true. With no entry for a detected model, CFG03 reports UNTESTED, which is the honest answer and is not the same as a clean bill of health.",
+  "entries": []
+}

@@ -8,7 +8,8 @@ import pytest
 
 from netcheck.budget import LAYER2, Budget, CapExceeded
 from netcheck.l2 import register
-from netcheck.l2.parse import Bpdu, Capture
+from netcheck.l2.parse import Bpdu
+from netcheck.models import Capture
 from netcheck.l2.probes import arp, dhcp, management, port_security, spanning_tree, trunking, vlan
 from netcheck.models import ABSENT, INDETERMINATE, PRESENT, UNTESTED
 from netcheck.registry import Context, NotStarted, Registry

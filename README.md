@@ -204,6 +204,19 @@ connection at least once.
 | L2A07 | Discovery protocol injection | active, 1 frame |
 | L2A08 | Client isolation | active, 2 frames |
 | L2A09 | Switch management plane reachable | active, 2 frames |
+| L3P01 | Host and address inventory | passive |
+| L3P02 | Cleartext transport metadata | passive |
+| L3P03 | Resolver behaviour | passive |
+| L3P04 | IPv6 addressing mode | passive |
+| L3P05 | Local discovery surface | passive |
+| L3P06 | ICMP anomalies | passive |
+| L3P07 | Outbound destination profile | passive |
+| L3P08 | Fragmentation observed | passive |
+| L3P09 | Duplicate address correlation | passive |
+| L3P10 | Hop count anomaly | passive |
+| CFG01 | Router config parse | offline |
+| CFG02 | Local host posture | offline |
+| CFG03 | Firmware version | offline |
 
 L2A05, L2A06 and L2A08 need an observer and report INDETERMINATE without one.
 
@@ -217,12 +230,31 @@ It records only the marker tokens the checks emit, never frame payloads, and
 answers `SEEN <token>` and `SIDE`. Run it on the host or segment a check is
 trying to reach.
 
+## The offline audit
+
+```
+netcheck audit --config router.cfg
+```
+
+Sends nothing and needs no interface or targets file. CFG01 parses OpenWrt UCI,
+DD-WRT nvram, generic key-value and plain text exports, and reports an encrypted
+or packed blob as exactly that rather than failing on it. CFG02 describes the
+machine running the tool, and the report keeps it in its own section saying so.
+
+CFG03 compares a detected model against `netcheck/cfg/advisories.json`, which
+ships empty. With no entry for a device it reports `no advisory data`, which is
+not a clean bill of health. The file is read through `importlib.resources`, so
+it resolves from an installed wheel and from the zipapp, and nothing is fetched
+at runtime.
+
 ## Status
 
-Milestones 1 and 2 of six are built: the platform capability layer, the posture
+Milestones 1 to 4 of six are built: the platform capability layer, the posture
 model, config discovery, profiles, both budgets, the abort watcher, the check
 registry, the report, `doctor`, packaging, continuous integration, every layer 2
-check, the internal observer and lab stage 1.
+check, all ten layer 3 passive checks, the three offline checks, the correlation
+layer with its device inventory and reachability matrix, the internal observer
+and lab stage 1.
 
-The layer 3 and offline checks are not built, so their controls report UNTESTED
-with reason `not_selected`.
+The layer 3 active checks are not built, so their controls report UNTESTED with
+reason `not_selected`, and every reachability cell reads untested.

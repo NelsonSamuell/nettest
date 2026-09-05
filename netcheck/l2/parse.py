@@ -6,7 +6,7 @@ frame that is not to or from this interface.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from scapy.contrib.cdp import (
     CDPMsgDeviceID,
@@ -39,6 +39,9 @@ from scapy.layers.netbios import NBNSQueryRequest
 from scapy.layers.snmp import SNMP
 from scapy.layers.vrrp import VRRP, VRRPv3
 from scapy.packet import Packet
+
+from netcheck.l3.parse import parse_l3
+from netcheck.models import Capture
 
 GLBP_PORT = 3222
 LLMNR_PORT = 5355
@@ -171,81 +174,6 @@ class ServiceAnnouncement:
     protocol: str
     source_mac: str
     service_type: str
-
-
-@dataclass
-class Capture:
-    interface: str = ""
-    duration: int = 0
-    frames_seen: int = 0
-    parse_errors: int = 0
-    gratuitous_arps: int = 0
-    truncated: set = field(default_factory=set)
-    discovery: list = field(default_factory=list)
-    trunking: list = field(default_factory=list)
-    bpdu: list = field(default_factory=list)
-    vtp: list = field(default_factory=list)
-    tagged: list = field(default_factory=list)
-    dhcp_servers: list = field(default_factory=list)
-    arp: list = field(default_factory=list)
-    names: list = field(default_factory=list)
-    fhrp: list = field(default_factory=list)
-    cleartext: list = field(default_factory=list)
-    router_adverts: list = field(default_factory=list)
-    services: list = field(default_factory=list)
-    _seen: set = field(default_factory=set, repr=False)
-
-    def add(self, name: str, record) -> bool:
-        """Store a record unless it duplicates one held or the cap is reached."""
-        from dataclasses import astuple
-
-        sink = getattr(self, name)
-        key = (name,) + astuple(record)
-        if key in self._seen:
-            return False
-        if len(sink) >= MAX_RECORDS:
-            self.truncated.add(name)
-            return False
-        self._seen.add(key)
-        sink.append(record)
-        return True
-
-    def observed_root_priority(self) -> int | None:
-        """The best root priority seen. L2A02 refuses to run without this."""
-        if not self.bpdu:
-            return None
-        return min(record.root_priority for record in self.bpdu)
-
-    def management_address(self) -> str:
-        """A switch management address disclosed by L2P01, if any."""
-        for record in self.discovery:
-            if record.management_address:
-                return record.management_address
-        return ""
-
-    def observed_ips(self) -> set[str]:
-        found = {r.claimed_ip for r in self.arp}
-        found |= {r.server_ip for r in self.dhcp_servers}
-        found |= {r.virtual_ip for r in self.fhrp}
-        found |= {r.management_address for r in self.discovery}
-        return {address for address in found if address}
-
-    def as_dict(self) -> dict:
-        return {
-            "interface": self.interface,
-            "duration": self.duration,
-            "frames_seen": self.frames_seen,
-            "parse_errors": self.parse_errors,
-            "gratuitous_arps": self.gratuitous_arps,
-            "truncated": sorted(self.truncated),
-            "records": {
-                name: len(getattr(self, name))
-                for name in (
-                    "discovery", "trunking", "bpdu", "vtp", "tagged", "dhcp_servers",
-                    "arp", "names", "fhrp", "cleartext", "router_adverts", "services",
-                )
-            },
-        }
 
 
 def _text(value: object) -> str:
@@ -533,5 +461,6 @@ def parse_frame(pkt: Packet, capture: Capture) -> None:
     try:
         for tag in parse_tagged(pkt):
             capture.add("tagged", tag)
+        parse_l3(pkt, capture)
     except Exception:
         capture.parse_errors += 1

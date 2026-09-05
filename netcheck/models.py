@@ -25,6 +25,11 @@ MEDIUM = "MEDIUM"
 LOW = "LOW"
 SEVERITY_ORDER = {HIGH: 0, MEDIUM: 1, LOW: 2}
 
+# A busy segment produces millions of frames. Records deduplicate on their own
+# contents and then cap, because findings are built from the distinct facts
+# observed and never from how many times each recurred.
+MAX_RECORDS = 2000
+
 # Reasons a check did not produce a state. These are contract strings: they
 # appear in the JSON output and a reader keys off them.
 BUDGET_EXHAUSTED = "budget_exhausted"
@@ -37,6 +42,120 @@ PREREQUISITE_MISSING = "prerequisite_missing"
 # The port security walk default, kept with the model so the CLI and the
 # budget module agree on it without importing each other.
 MAX_MACS_DEFAULT = 50
+
+
+@dataclass
+class Capture:
+    interface: str = ""
+    duration: int = 0
+    frames_seen: int = 0
+    parse_errors: int = 0
+    gratuitous_arps: int = 0
+    truncated: set = field(default_factory=set)
+    discovery: list = field(default_factory=list)
+    trunking: list = field(default_factory=list)
+    bpdu: list = field(default_factory=list)
+    vtp: list = field(default_factory=list)
+    tagged: list = field(default_factory=list)
+    dhcp_servers: list = field(default_factory=list)
+    arp: list = field(default_factory=list)
+    names: list = field(default_factory=list)
+    fhrp: list = field(default_factory=list)
+    cleartext: list = field(default_factory=list)
+    router_adverts: list = field(default_factory=list)
+    services: list = field(default_factory=list)
+    hosts: list = field(default_factory=list)
+    resolvers: list = field(default_factory=list)
+    dns_answers: list = field(default_factory=list)
+    ipv6_modes: list = field(default_factory=list)
+    icmp: list = field(default_factory=list)
+    outbound: list = field(default_factory=list)
+    fragments: list = field(default_factory=list)
+    hop_counts: list = field(default_factory=list)
+    packets_seen: int = 0
+    local_network: str = ""
+    host_posture: object = None
+    router_config: object = None
+    first_seen: dict = field(default_factory=dict)
+    last_seen: dict = field(default_factory=dict)
+    _seen: set = field(default_factory=set, repr=False)
+
+    def stamp(self, key: str, when: float) -> None:
+        """When a thing was first and last seen, kept outside the dedup key."""
+        if not when:
+            return
+        self.first_seen.setdefault(key, when)
+        self.last_seen[key] = when
+
+    def seen_window(self, key: str) -> tuple[float, float]:
+        return self.first_seen.get(key, 0.0), self.last_seen.get(key, 0.0)
+
+    def bindings(self) -> dict:
+        """Address to the set of MACs that claimed it, across every source."""
+        claims: dict = {}
+        for record in self.hosts:
+            claims.setdefault(record.ip, set()).add(record.mac)
+        for record in self.arp:
+            if record.claimed_ip and record.claimed_ip != "0.0.0.0":
+                claims.setdefault(record.claimed_ip, set()).add(record.source_mac)
+        return claims
+
+    def add(self, name: str, record) -> bool:
+        """Store a record unless it duplicates one held or the cap is reached."""
+        from dataclasses import astuple
+
+        sink = getattr(self, name)
+        key = (name,) + astuple(record)
+        if key in self._seen:
+            return False
+        if len(sink) >= MAX_RECORDS:
+            self.truncated.add(name)
+            return False
+        self._seen.add(key)
+        sink.append(record)
+        return True
+
+    def observed_root_priority(self) -> int | None:
+        """The best root priority seen. L2A02 refuses to run without this."""
+        if not self.bpdu:
+            return None
+        return min(record.root_priority for record in self.bpdu)
+
+    def management_address(self) -> str:
+        """A switch management address disclosed by L2P01, if any."""
+        for record in self.discovery:
+            if record.management_address:
+                return record.management_address
+        return ""
+
+    def observed_ips(self) -> set[str]:
+        found = {r.claimed_ip for r in self.arp}
+        found |= {r.server_ip for r in self.dhcp_servers}
+        found |= {r.virtual_ip for r in self.fhrp}
+        found |= {r.management_address for r in self.discovery}
+        return {address for address in found if address}
+
+    def as_dict(self) -> dict:
+        return {
+            "interface": self.interface,
+            "duration": self.duration,
+            "frames_seen": self.frames_seen,
+            "packets_seen": self.packets_seen,
+            "parse_errors": self.parse_errors,
+            "gratuitous_arps": self.gratuitous_arps,
+            "truncated": sorted(self.truncated),
+            "host": self.host_posture.as_dict() if self.host_posture else None,
+            "router_config": self.router_config.as_dict() if self.router_config else None,
+            "records": {
+                name: len(getattr(self, name))
+                for name in (
+                    "discovery", "trunking", "bpdu", "vtp", "tagged", "dhcp_servers",
+                    "arp", "names", "fhrp", "cleartext", "router_adverts", "services",
+                    "hosts", "resolvers", "dns_answers", "ipv6_modes", "icmp",
+                    "outbound", "fragments", "hop_counts",
+                )
+            },
+        }
 
 
 @dataclass

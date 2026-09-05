@@ -22,7 +22,7 @@ from scapy.layers.vrrp import VRRP
 from scapy.utils import PcapWriter, rdpcap
 
 from netcheck.l2 import frames, parse
-from netcheck.l2.parse import Capture
+from netcheck.models import Capture
 
 SWITCH = "00:00:5e:00:53:01"
 HOST = "00:00:5e:00:53:0a"

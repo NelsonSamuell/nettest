@@ -92,11 +92,12 @@ def build_parser(prog: str = "netcheck") -> argparse.ArgumentParser:
 
 
 def registry() -> "object":
-    """The registry with every built check registered. Layer 2 so far."""
-    from netcheck.l2 import register
+    """The registry with every built check registered."""
+    from netcheck.l2 import register as register_l2
+    from netcheck.l3 import register as register_l3
 
     if not REGISTRY.checks:
-        register(REGISTRY)
+        register_l3(register_l2(REGISTRY))
     return REGISTRY
 
 
@@ -147,6 +148,11 @@ def _metadata(started: datetime.datetime, interface: str = "") -> dict:
     }
 
 
+def capture_host(capture: dict | None) -> dict | None:
+    """The CFG02 section, kept apart because it is about this machine."""
+    return (capture or {}).get("host")
+
+
 def _finish(args, profile, configuration, posture, findings, interface, **extra) -> int:
     started = extra.pop("started", datetime.datetime.now(datetime.timezone.utc))
     metadata = _metadata(started, interface)
@@ -157,28 +163,53 @@ def _finish(args, profile, configuration, posture, findings, interface, **extra)
         posture, findings, profile, configuration,
         authorisation=extra.get("authorisation"),
         layers=getattr(args, "layers", "both"),
+        matrix=extra.get("matrix"),
+        devices=extra.get("devices"),
+        host=capture_host(extra.get("capture")),
         metadata=metadata,
     )
     _emit(document, text, args)
     return posture.exit_code()
 
 
-def _passive(interface: str, duration: int, capabilities, posture):
-    """Capture and fold in the result, or record why capture was impossible."""
-    from netcheck.l2 import apply_passive, findings as l2_findings
-    from netcheck.l2.listen import listen
-    from netcheck.l2.parse import Capture
+def _passive(interface: str, duration: int, capabilities, posture, config=None,
+             router_config: str | None = None):
+    """Capture, read the offline checks, and fold both into the posture.
+
+    The offline checks need no capture and no privilege, so they run even when
+    the interface cannot be listened to.
+    """
+    from netcheck.cfg import host_posture, router_config as router_config_module
+    from netcheck.l2 import apply_passive as apply_l2, findings as findings_l2
+    from netcheck.l3 import apply_passive as apply_l3, findings as findings_l3
+    from netcheck.l3.listen import listen
+    from netcheck.models import Capture
 
     known = registry()
     passive = [i for i in known.identifiers() if known.checks[i].is_passive]
     runnable, skipped = known.resolve(passive, capabilities)
     skipped_controls(skipped, known, posture)
-    if not runnable:
-        return Capture(interface=interface, duration=duration), []
 
-    capture = listen(interface, duration)
-    apply_passive(posture, capture)
-    return capture, report.sort_findings(l2_findings(capture))
+    if "CFG02" in runnable:
+        capture_only = Capture(interface=interface, duration=duration)
+        capture_only.host_posture = host_posture.read()
+    else:
+        capture_only = Capture(interface=interface, duration=duration)
+
+    if any(i.startswith(("L2P", "L3P")) for i in runnable):
+        listened = listen(interface, duration)
+        listened.host_posture = capture_only.host_posture
+        capture = listened
+    else:
+        capture = capture_only
+
+    if router_config:
+        capture.router_config = router_config_module.parse(router_config)
+
+    apply_l2(posture, capture)
+    apply_l3(posture, capture)
+    findings = report.sort_findings(findings_l2(capture) + findings_l3(capture))
+    return capture, findings
 
 
 def run_listen(args) -> int:
@@ -187,18 +218,48 @@ def run_listen(args) -> int:
     configuration = config_module.load(args.config, interface)
     started = datetime.datetime.now(datetime.timezone.utc)
     posture = Posture.new()
-    capture, findings = _passive(interface, args.duration, detect(), posture)
+    capture, findings = _passive(
+        interface, args.duration, detect(), posture, configuration
+    )
+    devices, matrix, findings = _correlate(capture, configuration, posture, findings)
     return _finish(
         args, profile, configuration, posture, findings, interface,
-        started=started, capture=capture.as_dict(),
+        started=started, capture=capture.as_dict(), devices=devices, matrix=matrix,
     )
 
 
+def _correlate(capture, configuration, posture, findings):
+    """Join the layers, then add the findings only the join can produce."""
+    from netcheck.correlate import correlate, findings as correlation_findings, reachability
+
+    devices = correlate(capture, configuration)
+    matrix = reachability(capture, None, configuration)
+    combined = report.sort_findings(
+        [f for f in findings if not f.check.startswith("COR")]
+        + correlation_findings(devices, posture, capture)
+    )
+    return [d.as_dict() for d in devices], matrix, combined
+
+
 def run_audit(args) -> int:
+    """Offline audit. Sends nothing and needs no interface."""
+    from netcheck.cfg import host_posture, router_config as router_config_module
+    from netcheck.l3 import apply_passive as apply_l3, findings as findings_l3
+    from netcheck.models import Capture
+
     profile = parse_profile("self")
     configuration = config_module.load(None)
     posture = Posture.new()
-    return _finish(args, profile, configuration, posture, [], "")
+    capture = Capture()
+    capture.host_posture = host_posture.read()
+    if args.config:
+        capture.router_config = router_config_module.parse(args.config)
+    apply_l3(posture, capture)
+    findings = report.sort_findings(findings_l3(capture))
+    return _finish(
+        args, profile, configuration, posture, findings, "",
+        capture=capture.as_dict(),
+    )
 
 
 def run_probe(args) -> int:
@@ -263,7 +324,9 @@ def run_probe(args) -> int:
     started = datetime.datetime.now(datetime.timezone.utc)
     posture = Posture.new()
     capabilities = detect()
-    capture, findings = _passive(interface, args.duration, capabilities, posture)
+    capture, findings = _passive(
+        interface, args.duration, capabilities, posture, configuration
+    )
 
     known = registry()
     selected = (
@@ -309,10 +372,12 @@ def run_probe(args) -> int:
             posture.set(control, state, basis, detail)
     watcher.current_check = None
 
+    devices, matrix, findings = _correlate(capture, configuration, posture, findings)
     return _finish(
         args, profile, configuration, posture, findings, interface,
         started=started, authorisation=authorisation, budget=budget,
         abort=watcher.as_dict(), capture=capture.as_dict(),
+        devices=devices, matrix=matrix,
     )
 
 
