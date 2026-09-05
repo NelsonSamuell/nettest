@@ -39,7 +39,7 @@ CONTROL = "BPDU Guard"
 IDENTIFIER = "L2A02"
 
 
-def run(context) -> tuple[str, str, str]:
+def run(context) -> tuple:
     """Send one losing BPDU and watch for the port being err-disabled."""
     observed = context.capture.observed_root_priority() if context.capture else None
     try:

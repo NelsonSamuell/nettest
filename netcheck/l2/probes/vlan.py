@@ -30,7 +30,7 @@ def native_vlan(capture) -> int:
     return DEFAULT_NATIVE_VLAN
 
 
-def run(context) -> tuple[str, str, str]:
+def run(context) -> tuple:
     """Send three double tagged echo requests toward the target VLAN."""
     target_vlan = getattr(context, "target_vlan", None)
     if target_vlan is None:

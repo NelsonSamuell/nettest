@@ -138,3 +138,91 @@ def collect_frames(interface: str, seconds: float, match) -> list:
     )
     sniffer.start()
     return collected, sniffer
+
+
+def send_packet(interface: str, packet) -> None:
+    """Send one IP packet, letting the kernel route and resolve it."""
+    from scapy.sendrecv import send
+
+    send(packet, iface=interface, verbose=False)
+
+
+def classify_connect(address: str, port: int, timeout: float) -> str:
+    """Open, closed or filtered, from the errno the connect returned.
+
+    Refused and timed out are different findings. Refused means the host
+    answered and nothing is listening; timed out means something dropped the
+    packet. Collapsing them loses the thing the check exists to measure.
+    """
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    connection = socket.socket(family, socket.SOCK_STREAM)
+    connection.settimeout(timeout)
+    try:
+        code = connection.connect_ex((address, port))
+    except OSError:
+        return "filtered"
+    finally:
+        connection.close()
+    if code == 0:
+        return "open"
+    if code in (errno.ECONNREFUSED, errno.ECONNRESET, errno.EHOSTUNREACH, errno.ENETUNREACH):
+        return "closed"
+    return "filtered"
+
+
+def read_banner(address: str, port: int, timeout: float) -> str:
+    """Whatever a service volunteers on connect. Nothing is requested."""
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    connection = socket.socket(family, socket.SOCK_STREAM)
+    connection.settimeout(timeout)
+    try:
+        connection.connect((address, port))
+        return connection.recv(256).decode("utf-8", "replace").strip()
+    except OSError:
+        return ""
+    finally:
+        connection.close()
+
+
+def read_tls(address: str, port: int, timeout: float) -> dict:
+    """Negotiate TLS and report the version and certificate, nothing more."""
+    import ssl
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    # Verification is off on purpose: a self signed certificate on a home router
+    # is the normal case and is itself worth reporting, not an error.
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    raw = socket.socket(family, socket.SOCK_STREAM)
+    raw.settimeout(timeout)
+    try:
+        raw.connect((address, port))
+        with context.wrap_socket(raw) as wrapped:
+            certificate = wrapped.getpeercert(binary_form=False) or {}
+            return {
+                "version": wrapped.version() or "",
+                "cipher": (wrapped.cipher() or ("",))[0],
+                "subject": str(certificate.get("subject", "")),
+                "issuer": str(certificate.get("issuer", "")),
+                "self_signed": certificate.get("subject") == certificate.get("issuer"),
+            }
+    except OSError as error:
+        return {"error": str(error)}
+    finally:
+        raw.close()
+
+
+def http_request(url: str, timeout: float, data=None, headers=None) -> tuple[int, str, str]:
+    """One HTTP request. Returns the status, the body and the final URL."""
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(url, data=data, headers=headers or {})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read(65536).decode("utf-8", "replace"), response.url
+    except urllib.error.HTTPError as error:
+        return error.code, error.read(65536).decode("utf-8", "replace"), url
+    except (OSError, ValueError) as error:
+        return 0, str(error), url

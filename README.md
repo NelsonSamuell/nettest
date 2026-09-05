@@ -217,6 +217,12 @@ connection at least once.
 | CFG01 | Router config parse | offline |
 | CFG02 | Local host posture | offline |
 | CFG03 | Firmware version | offline |
+| L3A01 | Host discovery | active, 1 per address |
+| L3A02 | TCP service inventory | active, 200 ports x 5 hosts |
+| L3A03 | UDP service inventory | active, 24 ports x 3 hosts, 1 retry |
+| L3A04 | Gateway management plane exposure | active, a few per service |
+| L3A06 | UPnP and NAT-PMP mapping | active, 3 |
+| L3A12 | ICMP redirect acceptance | active, 1 |
 
 L2A05, L2A06 and L2A08 need an observer and report INDETERMINATE without one.
 
@@ -249,7 +255,7 @@ at runtime.
 
 ## Status
 
-Milestones 1 to 4 of six are built: the platform capability layer, the posture
+Milestones 1 to 5 of six are built: the platform capability layer, the posture
 model, config discovery, profiles, both budgets, the abort watcher, the check
 registry, the report, `doctor`, packaging, continuous integration, every layer 2
 check, all ten layer 3 passive checks, the three offline checks, the correlation

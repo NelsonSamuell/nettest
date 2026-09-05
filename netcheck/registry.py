@@ -144,6 +144,24 @@ class Context:
     sender: Callable[[str, bytes], None] | None = None
     collector: Callable | None = None
     observer_query: Callable | None = None
+    packet_sender: Callable | None = None
+    classifier: Callable | None = None
+    banner_reader: Callable | None = None
+    tls_reader: Callable | None = None
+    http_client: Callable | None = None
+    cleanup: list = field(default_factory=list)
+    tcp_open: dict = field(default_factory=dict)
+    management_services: list = field(default_factory=list)
+
+    def run_cleanup(self) -> None:
+        """Undo anything a check wrote to another device.
+
+        Called on a normal finish and on an abort. Checks that write state also
+        register with atexit and the interrupt handlers, so nothing survives a
+        run that ends unexpectedly.
+        """
+        for handler in self.cleanup:
+            handler()
     clock: Callable[[], float] = time.monotonic
     sleeper: Callable[[float], None] = time.sleep
     expect_link_change: bool = False
@@ -184,6 +202,57 @@ class Context:
             sender(self.interface, bytes(frame))
         return len(batch)
 
+    def send_packets(self, packets) -> int:
+        """Send IP packets, counted against the layer 3 budget.
+
+        Separate from send_frames because the two budgets decrement
+        independently: one ceiling covering both would let a sweep starve the
+        checks that need a handful of frames.
+        """
+        from netcheck.budget import LAYER3
+
+        if not self.started:
+            raise NotStarted("nothing may be sent before the context is started")
+        batch = packets if isinstance(packets, (list, tuple)) else [packets]
+        batch = list(batch)
+        if self.abort is not None:
+            self.abort.expect_link_change = self.expect_link_change
+            self.abort.check()
+        self.budget.spend(LAYER3, len(batch))
+        self._pace(len(batch))
+        sender = self.packet_sender or _default_packet_sender
+        for packet in batch:
+            sender(self.interface, packet)
+        return len(batch)
+
+    def connect_result(self, address: str, port: int, timeout: float = 2.0) -> str:
+        """Whether a port is open, closed or filtered. Costs one layer 3 packet."""
+        from netcheck.budget import LAYER3
+
+        self.budget.spend(LAYER3, 1)
+        return (self.classifier or _default_classifier)(address, port, timeout)
+
+    def banner(self, address: str, port: int, timeout: float = 3.0) -> str:
+        """What a service says on connect. Version detection is the boundary."""
+        from netcheck.budget import LAYER3
+
+        self.budget.spend(LAYER3, 1)
+        return (self.banner_reader or _default_banner)(address, port, timeout)
+
+    def tls(self, address: str, port: int, timeout: float = 4.0) -> dict:
+        """The TLS version and certificate, and nothing else."""
+        from netcheck.budget import LAYER3
+
+        self.budget.spend(LAYER3, 1)
+        return (self.tls_reader or _default_tls)(address, port, timeout)
+
+    def http(self, url: str, timeout: float = 4.0, data=None, headers=None):
+        """One HTTP request, counted."""
+        from netcheck.budget import LAYER3
+
+        self.budget.spend(LAYER3, 1)
+        return (self.http_client or _default_http)(url, timeout, data, headers)
+
     def collect(self, seconds: float, match):
         """Listen for matching replies while a check is sending."""
         collector = self.collector or _default_collector
@@ -210,6 +279,36 @@ def _default_sender(interface: str, frame: bytes) -> None:
     from netcheck.platform.sockets import send_frame
 
     send_frame(interface, frame)
+
+
+def _default_packet_sender(interface: str, packet) -> None:
+    from netcheck.platform.sockets import send_packet
+
+    send_packet(interface, packet)
+
+
+def _default_classifier(address: str, port: int, timeout: float) -> str:
+    from netcheck.platform.sockets import classify_connect
+
+    return classify_connect(address, port, timeout)
+
+
+def _default_banner(address: str, port: int, timeout: float) -> str:
+    from netcheck.platform.sockets import read_banner
+
+    return read_banner(address, port, timeout)
+
+
+def _default_tls(address: str, port: int, timeout: float) -> dict:
+    from netcheck.platform.sockets import read_tls
+
+    return read_tls(address, port, timeout)
+
+
+def _default_http(url: str, timeout: float, data, headers):
+    from netcheck.platform.sockets import http_request
+
+    return http_request(url, timeout, data, headers)
 
 
 def _default_observer_query(endpoint: str, token: str, timeout: float):

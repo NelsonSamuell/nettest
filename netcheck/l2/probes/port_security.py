@@ -19,7 +19,7 @@ SETTLE_SECONDS = 1.0
 TARGET_IP = "169.254.255.254"
 
 
-def run(context) -> tuple[str, str, str]:
+def run(context) -> tuple:
     """Introduce addresses one at a time until the port reacts."""
     from netcheck.budget import LAYER2
 

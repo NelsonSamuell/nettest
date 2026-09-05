@@ -8,8 +8,7 @@ sudo ./lab/build_lab.sh
 sudo ./lab/build_lab.sh --teardown
 ```
 
-Stage 1 is built. Stage 2, the routed layer 3 topology, arrives with the layer 3
-checks.
+Both stages are built.
 
 ## Stage 1, layer 2
 
@@ -31,6 +30,31 @@ sudo netcheck listen --interface nctrunk --duration 30
 
 The native VLAN on the trunk is left at 1 on purpose, because that is the
 condition double tagging depends on.
+
+## Stage 2, layer 3
+
+A NAT gateway namespace between an inside and an outside, plus a guest segment
+and a globally addressed IPv6 host:
+
+| Namespace | Address | Purpose |
+| --- | --- | --- |
+| `ncgw` | 10.20.0.1 inside, 10.30.0.1 outside | NAT gateway with an nftables rule set |
+| `ncin` | 10.20.0.10 | run netcheck here |
+| `ncout` | 10.30.0.10 | run the external observer here |
+| `ncv6` | fd00:dead:beef::10 | global IPv6, no inbound v6 filter |
+| `ncguest` | 10.40.0.10 on bridge `ncbr1` | the guest segment |
+
+A minimal UPnP IGD responder and a minimal DNS server run inside `ncgw`, so
+L3A06 and L3A10 have something to talk to.
+
+The gateway rule set has deliberate gaps, one per check. Read the `nft` block in
+the script as the answer key: inbound from outside is dropped except on 8080,
+and there is no IPv6 rule at all.
+
+```
+sudo ip netns exec ncin netcheck probe --active --tests L3A02
+sudo ip netns exec ncout netcheck observe --port 9001 --side external
+```
 
 ## What the lab exercises
 

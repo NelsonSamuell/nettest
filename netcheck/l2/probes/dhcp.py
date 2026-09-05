@@ -17,7 +17,7 @@ from netcheck.models import ABSENT, INDETERMINATE, PRESENT
 LISTEN_SECONDS = 5
 
 
-def run(context) -> tuple[str, str, str]:
+def run(context) -> tuple:
     """Send one DHCP discover and count the servers that answer."""
     source = frames.probe_mac(4)
     xid = secrets.randbits(32)

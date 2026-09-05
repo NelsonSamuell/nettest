@@ -36,7 +36,7 @@ def _local_address(context) -> str:
     return entry.address if entry else ""
 
 
-def run_client_isolation(context) -> tuple[str, str, str]:
+def run_client_isolation(context) -> tuple:
     """L2A08. Two frames to another host, confirmed by an observer on it."""
     if not context.observer:
         return (
@@ -75,7 +75,7 @@ def run_client_isolation(context) -> tuple[str, str, str]:
     return PRESENT, "L2A08", "the observer on %s saw nothing from this port" % target
 
 
-def run_management_reachable(context) -> tuple[str, str, str]:
+def run_management_reachable(context) -> tuple:
     """L2A09. Whether the disclosed switch management address answers here."""
     address = context.capture.management_address() if context.capture else ""
     if not address:

@@ -22,7 +22,7 @@ LIVENESS_SECONDS = 3
 OBSERVER_SECONDS = 5
 
 
-def run(context) -> tuple[str, str, str]:
+def run(context) -> tuple:
     """Announce one unused address and ask an observer whether it arrived."""
     address = context.test_ip
     if not address:

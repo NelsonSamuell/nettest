@@ -17,11 +17,19 @@ from netcheck.models import (
     Finding,
     Posture,
 )
-from netcheck.platform.detect import RAW_L2_CAPTURE, SYSCTL_READ
+from netcheck.platform.detect import (
+    RAW_L2_CAPTURE,
+    RAW_L3_SEND,
+    SOCKET_L4,
+    SYSCTL_READ,
+)
 from netcheck.registry import Check, Registry
 
 CAPTURE = frozenset({RAW_L2_CAPTURE})
 OFFLINE = frozenset()
+SEND = frozenset({RAW_L3_SEND})
+# L3A04 talks to services over ordinary TCP, which needs no privilege anywhere.
+TRANSPORT = frozenset({SOCKET_L4})
 
 PASSIVE = (
     ("L3P01", "Host and address inventory", ()),
@@ -45,11 +53,29 @@ OFFLINE_CHECKS = (
 
 
 def register(registry: Registry) -> Registry:
-    """Add every layer 3 passive and offline check."""
+    """Add every layer 3 and offline check. Probes import lazily to avoid a cycle."""
+    from netcheck.l3.probes import discovery, filtering, services, upnp
+
+    active = (
+        ("L3A01", "Host discovery", (), SEND, discovery.run_host_discovery, ("L3P01",)),
+        ("L3A02", "TCP service inventory", (), SEND, discovery.run_tcp_inventory, ("L3A01",)),
+        ("L3A03", "UDP service inventory", (), SEND, discovery.run_udp_inventory, ("L3A01",)),
+        ("L3A04", "Gateway management plane exposure",
+         ("Gateway management plane isolation",), TRANSPORT, services.run, ("L3A02",)),
+        ("L3A06", "UPnP and NAT-PMP mapping", ("UPnP mapping restraint",),
+         SEND, upnp.run, ("L2P13",)),
+        ("L3A12", "ICMP redirect acceptance", ("ICMP redirect handling",),
+         SEND, filtering.run, ()),
+    )
+
     for identifier, title, controls in PASSIVE:
         registry.register(Check(identifier, title, controls, requires=CAPTURE))
     for identifier, title, controls, requires in OFFLINE_CHECKS:
         registry.register(Check(identifier, title, controls, requires=requires))
+    for identifier, title, controls, requires, run, depends in active:
+        registry.register(
+            Check(identifier, title, controls, requires=requires, depends_on=depends, run=run)
+        )
     return registry
 
 

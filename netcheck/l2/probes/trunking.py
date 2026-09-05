@@ -18,7 +18,7 @@ PROBE_NAME = "netcheck"
 PROBE_PORT_ID = "netcheck-probe"
 
 
-def run_dtp(context) -> tuple[str, str, str]:
+def run_dtp(context) -> tuple:
     """L2A01. Send one DTP desirable frame and report whether the port answers."""
     source = frames.probe_mac(1)
     domain = context.capture.trunking[0].domain if context.capture and context.capture.trunking else ""
@@ -38,7 +38,7 @@ def run_dtp(context) -> tuple[str, str, str]:
     return ABSENT, "L2A01", "the port answered DTP, mode %s" % record.mode
 
 
-def run_lldp_injection(context) -> tuple[str, str, str]:
+def run_lldp_injection(context) -> tuple:
     """L2A07. Send one LLDP frame and check whether it comes back to the port."""
     source = frames.probe_mac(7)
     replies, sniffer = context.collect(

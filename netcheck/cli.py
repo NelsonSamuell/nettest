@@ -19,6 +19,7 @@ from netcheck.abort import AbortWatcher, StateChanged
 from netcheck.authorisation import check_scope, confirm_segment
 from netcheck.authorisation import load as load_authorisation
 from netcheck.budget import Budget, CapExceeded, validate_max_macs
+from netcheck.l3.probes.upnp import CleanupFailed
 from netcheck.models import MAX_MACS_DEFAULT, Posture
 from netcheck.platform.detect import detect
 from netcheck.profile import ConfigError, parse_profile
@@ -355,23 +356,34 @@ def run_probe(args) -> int:
     )
     context.start()
 
-    for identifier in runnable:
-        check = known.checks[identifier]
-        if check.run is None:
-            continue
-        watcher.current_check = identifier
-        try:
-            state, basis, detail = check.run(context)
-        except CapExceeded as error:
-            print("stopping: %s" % error, file=sys.stderr)
-            break
-        except StateChanged as error:
-            print("stopping during %s: %s" % (error.during, error.detail), file=sys.stderr)
-            break
-        for control in check.controls:
-            posture.set(control, state, basis, detail)
-    watcher.current_check = None
+    try:
+        for identifier in runnable:
+            check = known.checks[identifier]
+            if check.run is None:
+                continue
+            watcher.current_check = identifier
+            try:
+                outcome = check.run(context)
+            except CapExceeded as error:
+                print("stopping: %s" % error, file=sys.stderr)
+                break
+            except StateChanged as error:
+                print("stopping during %s: %s" % (error.during, error.detail),
+                      file=sys.stderr)
+                break
+            except CleanupFailed as error:
+                # A check could not undo what it wrote. Halting is the point.
+                print("stopping during %s: %s" % (identifier, error), file=sys.stderr)
+                break
+            state, basis, detail = outcome[0], outcome[1], outcome[2]
+            findings = findings + list(outcome[3]) if len(outcome) > 3 else findings
+            for control in check.controls:
+                posture.set(control, state, basis, detail)
+    finally:
+        watcher.current_check = None
+        context.run_cleanup()
 
+    findings = report.sort_findings(findings)
     devices, matrix, findings = _correlate(capture, configuration, posture, findings)
     return _finish(
         args, profile, configuration, posture, findings, interface,
