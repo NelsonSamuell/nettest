@@ -1,29 +1,29 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "l2check"
+name = "netcheck"
 version = "0.1.0"
-description = "Layer 2 and layer 3 network posture checker"
-requires-python = ">=3.10"
+description = "Layer 2 and layer 3 network posture validator"
+readme = "README.md"
+requires-python = ">=3.11"
 dependencies = [
-    "scapy>=2.5",
+    "scapy>=2.5.0",
     "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.4"]
 
 [project.scripts]
-netcheck = "l2check.cli:main"
-l2check = "l2check.cli:main_l2check"
+netcheck = "netcheck.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["l2check*"]
+include = ["netcheck*"]
 
 [tool.setuptools.package-data]
-l2check = ["data/*.json"]
+"netcheck.cfg" = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

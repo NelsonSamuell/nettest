@@ -2,406 +2,185 @@
 
 ## What it does
 
-l2check attaches to a switch port or a wireless link and reports which layer 2
-protections the network actually enforces there. It listens for discovery,
-trunking, spanning tree, name resolution and router advertisement traffic, then
-optionally sends bounded probes to determine whether protections like BPDU
-Guard, DHCP Snooping, client isolation and port security are in place. The
-output is a posture table, not an exploit.
+netcheck measures which layer 2 and layer 3 protections a network actually
+enforces, from a host attached to it. It answers which controls the switch port
+enforces and which controls the network enforces, and reports each as present,
+absent, indeterminate or untested. The output is a posture table and a
+reachability matrix, not an exploit.
 
-## Prove it is possible, never perform it
+## Operating profiles
 
-Every active probe is built so that it cannot cause an outage even when it
-succeeds. A BPDU is sent with a priority that cannot win the root election. MAC
-addresses are introduced in bounded numbers and never at flood rate. One DHCP
-discover is sent and never a request. An ARP announcement is made for an address
-the operator has confirmed is unused, never for a gateway.
+**self** is the default. No authorisation file. A targets file only, and that is
+optional because every field defaults from the routing table. Budget caps are
+defaults that flags can raise. Reports are stamped `profile: self` and say they
+are not a client deliverable.
 
-The caps are enforced in code, across the whole run:
+**engagement** is selected with `--profile engagement`. It requires
+`--authorisation FILE`, budget caps become ceilings no flag can raise, `--all`
+is rejected, and the report carries the authorisation file hash.
 
-| Limit | Value |
-| --- | --- |
-| Total frames, all probes combined | 600 |
-| Total active runtime | 10 minutes |
-| MAC addresses introduced by L2A03 | 50 by default, 500 ceiling |
-| Neighbours asked by L2A08 | 25 by default, 50 ceiling |
-| TCP connections, charged as 3 frames each | the same 600 frame budget |
-| Probes run | only those named in `--tests` |
+The profile appears in the JSON, in the Markdown and on the first line of the
+terminal report. A reader never has to guess which produced a report.
 
-No flag raises any of them, and there is no option to run every probe at once.
-If the link state changes when no probe expected it, the run stops.
+## Hard limits, both profiles
 
-These are never implemented, behind any flag:
+No flag changes any of these, and no code implementing them exists:
 
 - CAM table overflow at flood rate
 - Claiming the spanning tree root role, or forwarding frames as a bridge
-- Sustained ARP poisoning, or any interception, relay or forwarding of frames
-  belonging to another host
+- Sustained ARP poisoning, traffic interception, or relaying another host's frames
 - DHCP pool exhaustion
-- Capturing, storing or writing to disk the payload of any frame not addressed
-  to or from the tool's own interface
-- Monitor mode, deauthentication, handshake capture, or radio injection
-- Sending an IPv6 router advertisement, which would reconfigure every host that
-  believed it
+- Credential testing, default password lists, or authentication attempts of any
+  kind. Version and banner detection is the boundary
+- Exploitation of any identified service
+- Payload capture or session reconstruction
+- Wireless radio injection, deauthentication, monitor mode, or handshake capture
+- A send rate above 1000 packets per second
 
-The passive listener records protocol metadata only. It never writes a frame
-payload to a pcap or a log.
-
-## Passive and active
-
-Passive is the default. It transmits nothing, needs no configuration file, and
-runs on any interface with no arguments. Most real findings come from it.
-
-Active checks need `--active` and nothing else. This tool is built for a network
-you own; there is no authorisation file, no date window and no approval prompt.
-That also means it is your job not to point it at a network that is not yours.
-
-A configuration file still exists, but it is a targets file rather than a
-permission slip: which subnets to sweep, where the gateway is, where the
-observers are. Every field defaults from the routing table, so it is optional.
-See "The targets file" below.
-
-## Limits
-
-Limits are defaults, and flags raise them:
-
-| Limit | Default | Flag |
-| --- | --- | --- |
-| Layer 2 frame budget | 600 | `--frame-budget` |
-| Layer 3 packet budget | 5000 | `--packet-budget` |
-| Runtime | 15 minutes | `--runtime` |
-| Send rate | 200 pps | `--rate`, hard capped at 1000 |
-
-The two budgets decrement independently. When one runs out, the checks that
-needed it report `UNTESTED` with reason `budget_exhausted`, never `ABSENT`.
-
-The send rate is the one limit no flag can exceed. Above roughly a thousand
-packets per second consumer gateways start dropping responses selectively, and
-every silence in the report becomes ambiguous. That is an accuracy constraint,
-not a policy one. If you need a faster sweep, use nmap.
-
-A sweep wider than a /24 prints the estimated address count and running time and
-needs `--yes` to proceed. It is a warning, not a refusal.
-
-## The targets file
-
-Default location `./netcheck.yaml`, overridden with `--config`. Optional.
-
-```yaml
-targets:
-  subnets:
-    - 192.168.1.0/24
-  gateway: 192.168.1.1          # default: from the routing table
-  guest_subnet: 192.168.2.0/24  # optional
-
-exclude:
-  - 192.168.1.50                # anything you do not want touched
-
-observers:
-  internal: 192.168.1.20:9001
-  external: vps.example.net:9001
-
-limits:
-  rate_pps: 200
-  packet_budget: 5000
-  runtime_minutes: 15
-```
-
-`exclude` wins over `targets`, so a fragile printer or a work laptop stays out
-of a sweep. The WAN address is excluded by default; `--wan` includes it.
-
-## Wired and wireless profiles
-
-The controls worth reporting depend on the medium, so there are two control
-sets and the interface picks one:
-
-- **wired**, on a switch port: the eight switch controls plus the seven common
-  ones.
-- **wireless**, on a radio link: link encryption, protected management frames
-  and WPS, plus the same seven common ones.
-
-Detection follows `/sys/class/net/<iface>/wireless`, and `--profile wired` or
-`--profile wireless` overrides it. The wireless facts come from the kernel's
-cached scan results through `iw`, which needs no privileges and transmits
-nothing.
-
-Monitor mode is deliberately not used, and neither is deauthentication,
-handshake capture or any form of radio injection. Monitor mode would drop the
-connection, which is the kind of outage this tool refuses to be able to cause.
-That is the limit of what it can say about the radio: it reports what the access
-point advertises, not what it does under attack.
+The rate cap is a measurement constraint as much as a safety one. Above roughly
+a thousand packets per second consumer gateways drop responses selectively and
+every silence in the report becomes ambiguous. Anything faster is a job for nmap.
 
 ## Install and run
 
-Linux only. l2check uses `AF_PACKET` directly.
-
-Run the setup script once:
-
 ```
-./setup.sh
-```
-
-It creates a virtual environment in `.venv`, installs the tool into it, grants
-that environment permission to read frames, and links `netcheck` and `l2check`
-into `~/.local/bin` so they work from any directory.
-
-It asks for `sudo` exactly once, for the permission step alone, and never again.
-A file capability is an attribute stored on disk beside the binary, like a
-permission bit: it survives reboots, logins and package upgrades. Running
-`setup.sh` again is safe and skips every step already done, including that one.
-
-The only thing that undoes it is deleting `.venv`, because the capability was
-granted to that directory's own `python3` binary. Rebuild it with `./setup.sh`
-and you will be asked once more.
-
-Run it once **per machine**, not once per checkout. A capability is an extended
-attribute the filesystem holds against that binary; git records only whether a
-file is executable, so no clone, fork or archive carries it. `.venv` is ignored
-anyway, so a fresh checkout has no interpreter to have inherited anything.
-
-If you would rather not grant it on a machine you are only testing on, run the
-one command under sudo instead:
-
-```
-sudo ./bin/netcheck listen
-```
-
-That works with no setup, at the cost of running the whole tool as root rather
-than one binary holding one capability.
-
-Then check it worked:
-
-```
+pipx install netcheck
 netcheck doctor
 ```
 
-That prints what is installed, whether l2check may read frames, which interfaces
-exist, and the exact command to run next. It is the first thing to run when
-something does not work.
-
-After that, `--interface` is optional. With no interface named, l2check uses the
-one carrying your default route:
+Before a release exists:
 
 ```
-netcheck listen                      # 120 seconds on your main interface
-netcheck listen --duration 30
-netcheck listen --interface wlan0 --json --out posture.json
-netcheck posture --from posture.json
-netcheck posture --from posture.json --diff previous.json
-netcheck audit                       # offline checks, sends nothing
+pipx install git+<url>
 ```
 
-The active side and the cooperating observer:
+A single file that needs no install, for a host you would rather not change:
 
 ```
-netcheck probe --interface eth0 --active --tests L2A01,L3A02
-netcheck probe --interface eth0 --active --all
-netcheck observe --interface eth0 --port 9001 --side internal
-netcheck observe --interface eth0 --port 9001 --side external
+make dist
+python netcheck.pyz doctor
 ```
 
-`--all` runs everything this setup can support and skips the rest up front, with
-a reason, rather than failing halfway through. Checks run in dependency order:
-the passive capture completes first, then discovery, then the checks that read
-what discovery found.
-
-`l2check` remains as an alias that reports the layer 2 control set only.
-`--layers l2|l3|both` selects which controls appear, and `--markdown PATH`
-writes the report as Markdown alongside the JSON.
-
-Exit codes: 0 when no control is absent, 1 when one or more are, 2 for an input
-or configuration error.
-
-### Why the setup script, and not setcap on the system python
-
-Reading raw frames needs `CAP_NET_RAW`. The obvious way to get it is:
+Docker, for Linux hosts only:
 
 ```
-sudo setcap cap_net_raw,cap_net_admin+eip "$(readlink -f "$(which python3)")"
+docker build -t netcheck .
+docker run --rm --net=host --cap-add=NET_RAW --cap-add=NET_ADMIN netcheck doctor
 ```
 
-Do not do this. It grants raw socket access to **every** Python program on the
-machine, for every user, permanently. Any script anyone runs can then read all
-traffic on every interface. It is a much larger grant than the tool needs.
+On macOS and Windows, Docker runs inside a virtual machine, so `--net=host`
+attaches to the VM's network and not the real LAN. Every result would then be
+about a network that does not exist. netcheck detects containerisation and
+refuses active checks when the default route is a virtual adapter.
 
-`setup.sh` builds its virtual environment with `--copies`, so the environment
-gets its own `python3` binary rather than a symlink to the system one, and the
-capability is granted to that copy alone. Nothing outside `.venv` gains
-anything.
+Run `netcheck doctor` first, always. It is the first thing to attach to a bug
+report.
 
-If you previously ran the command above, undo it:
+## Platform matrix
+
+| Capability | Linux | macOS | Windows |
+| ---------- | ----- | ----- | ------- |
+| `raw_l2_send` | AF_PACKET | `/dev/bpf`, root | Npcap, some drivers strip 802.1Q |
+| `raw_l2_capture` | AF_PACKET | `/dev/bpf`, root | Npcap |
+| `raw_l3_send` | raw socket | raw socket, root | Npcap |
+| `socket_l4` | yes | yes | yes |
+| `routing_read` | `/proc/net`, netlink | `route`, `ifconfig` | `Get-NetRoute` |
+| `firewall_read` | nftables, iptables, ufw, firewalld | `pfctl` | `Get-NetFirewallRule` |
+
+What that means in practice:
+
+- Layer 2 active probes are Linux first. macOS injects through BPF, but some
+  drivers rewrite or strip VLAN tags, so L2A06 reports INDETERMINATE there
+  rather than a false negative. Windows without Npcap is capture only.
+- Every layer 3 check works on all three platforms.
+- CFG checks need no privilege anywhere.
+- CGNAT detection, `doctor` and the offline audit run unprivileged.
+
+A capability is resolved by attempting the operation, not by reading the
+platform name. A check whose requirements are unmet is skipped before it runs,
+and the report distinguishes `unsupported_platform`, which cannot be fixed, from
+`insufficient_privilege`, which tells you what to run.
+
+## Privilege
+
+Root is not required. `doctor` reports what is held and prints the exact command
+for the host it is running on, and only that one.
+
+## Configuration
+
+The targets file is optional. It is searched for in this order, first hit wins,
+and `doctor` prints which was used:
+
+1. `--config`
+2. `NETCHECK_CONFIG`
+3. `./netcheck.yaml`
+4. the per-user config directory, `~/.config/netcheck/config.yaml` on Linux and
+   macOS, `%APPDATA%\netcheck\config.yaml` on Windows
+
+`examples/netcheck.example.yaml` is a complete file. `exclude` always wins over
+`targets`. A prefix wider than a /24 prints the estimated packet count and
+requires `--yes`; that is a warning, not a refusal. The WAN address is excluded
+unless `--wan` is given.
+
+The authorisation file, used only by the engagement profile, is described in
+`AUTHORISATION.md`, with `examples/authorisation.example.yaml` as a template.
+
+## Budgets
 
 ```
-sudo setcap -r "$(readlink -f "$(which python3)")"
-getcap "$(readlink -f "$(which python3)")"    # should print nothing
+L2 frame budget    600 default    --frame-budget
+L3 packet budget   5000 default   --packet-budget
+Runtime            15 min         --runtime
+Send rate          200 pps        --rate, hard cap 1000 in both profiles
 ```
 
-Running the tool as root works too, and is worse: everything the tool does then
-runs as root, rather than one binary holding one capability.
+The two budgets decrement independently. When one runs out the remaining checks
+report UNTESTED with reason `budget_exhausted`, never ABSENT, and the JSON
+carries the remaining balances.
 
-### Installing it the manual way
-
-If you would rather not use the script:
-
-```
-python3 -m venv --copies --system-site-packages .venv
-.venv/bin/pip install -e .
-sudo setcap cap_net_raw,cap_net_admin+eip .venv/bin/python3
-.venv/bin/netcheck doctor
-```
-
-## Checks
-
-| ID | Title | Mode | Frames sent |
-| --- | --- | --- | --- |
-| L2P01 | Discovery protocol disclosure | passive | 0 |
-| L2P02 | Dynamic trunking negotiation offered | passive | 0 |
-| L2P03 | Spanning tree BPDUs on an access port | passive | 0 |
-| L2P04 | VTP frames observed | passive | 0 |
-| L2P05 | Native VLAN is the default | passive | 0 |
-| L2P06 | 802.1Q tagged frames on an access port | passive | 0 |
-| L2P07 | Multiple DHCP servers observed | passive | 0 |
-| L2P08 | Gratuitous ARP anomalies | passive | 0 |
-| L2P09 | Name resolution poisoning surface | passive | 0 |
-| L2P10 | First-hop redundancy without authentication | passive | 0 |
-| L2P11 | Cleartext management protocols | passive | 0 |
-| L2P12 | IPv6 router advertisements, rogue RA surface | passive | 0 |
-| L2P13 | UPnP and SSDP exposure | passive | 0 |
-| L2P14 | Peer station traffic visible, clients not isolated | passive | 0 |
-| L2P15 | Wireless link encryption | read-only | 0 |
-| L2P16 | Protected management frames, 802.11w | read-only | 0 |
-| L2P17 | WPS advertised | read-only | 0 |
-| L3P01 | Host and address inventory | passive | 0 |
-| L3P02 | Cleartext transport metadata | passive | 0 |
-| L3P03 | Resolver behaviour | passive | 0 |
-| L3P04 | IPv6 addressing mode | passive | 0 |
-| L3P05 | Local discovery surface | passive | 0 |
-| L3P06 | ICMP anomalies | passive | 0 |
-| L3P07 | Outbound destination profile | passive | 0 |
-| L3P08 | Fragmentation observed | passive | 0 |
-| L3P09 | Duplicate address correlation | passive | 0 |
-| L3P10 | Hop count anomaly | passive | 0 |
-| CFG01 | Router config parse | offline | 0 |
-| CFG02 | Local host posture | offline | 0 |
-| CFG03 | Firmware advisory match | offline | 0 |
-| L3A01 | Host discovery | active | 1 per address |
-| L3A02 | TCP service inventory | active | 200 ports x 5 hosts |
-| L3A03 | UDP service inventory | active | 30 ports x 3 hosts, 1 retry |
-| L3A04 | Management plane exposure | active | a few per service |
-| L3A05 | Inbound reachability, IPv4 | active | observer side |
-| L3A06 | UPnP and NAT-PMP mapping | active | 3 |
-| L3A07 | Egress filtering | active | 43 |
-| L3A08 | Inbound reachability, IPv6 | active | observer side |
-| L3A09 | Guest segmentation | active | 3 |
-| L3A10 | DNS rebinding protection | active | 1 |
-| L3A11 | Resolver scoping | active | observer side |
-| L3A12 | ICMP redirect acceptance | active | 1 |
-| L3A13 | Anti-spoofing | active | 1 |
-| L3A14 | Fragment handling | active | 2 |
-| L3A15 | Source routing | active | 2 |
-| COR01-05 | Correlation findings | derived | 0 |
-
-Eight of the active checks need a cooperating observer and report
-`INDETERMINATE` without one. `docs/OBSERVER.md` covers running one, including on
-a cheap VPS for the checks that need a vantage point outside the NAT boundary.
-
-`netcheck doctor` is not a check. It inspects your own machine and sends nothing.
-| L2A01 | DTP trunk negotiation | active | 1 |
-| L2A02 | BPDU Guard verification | active | 1 |
-| L2A03 | Port security threshold | active | up to 50, ceiling 500 |
-| L2A04 | DHCP snooping | active | 1 |
-| L2A05 | Dynamic ARP Inspection | active | 1, plus 2 pre-flight checks |
-| L2A06 | Double tagging reachability | active | 3 |
-| L2A07 | Discovery protocol injection | active | 1 |
-| L2A08 | Client isolation | active | up to 25 |
-| L2A09 | UPnP gateway reachability | active | 1 |
-| L2A10 | Gateway management exposure | active | 3 per port, 5 ports |
-
-L2A05 and L2A06 need a cooperating listener on the target segment, started with
-`l2check observe` and named with `--observer HOST:PORT`.
-
-## The posture table
-
-Twenty six controls on a wired segment, twenty one on a wireless one, each in one
-of four states. Layer 2 and layer 3 controls are grouped separately, and
-`--layers l2` or `--layers l3` shows one group alone.
+## The four states
 
 - `PRESENT`: a check produced positive evidence the control is enforcing.
-- `ABSENT`: a check produced positive evidence it is not. This is what sets the
-  exit code to 1.
-- `INDETERMINATE`: a probe ran and the answer was ambiguous. The basis column
-  says why, most often that no observer was supplied and one way delivery cannot
-  be confirmed from the sending side.
-- `UNTESTED`: nothing was learned. The probe was not selected, or it refused to
-  run, or nothing relevant arrived during the capture window.
+- `ABSENT`: a check produced positive evidence it is not. This sets the exit code.
+- `INDETERMINATE`: a check ran and could not tell. The detail says why.
+- `UNTESTED`: nothing was learned. The detail says why not.
 
-`UNTESTED` is not a pass. A quiet port is not a protected port, and the tool
-never collapses `UNTESTED` into `ABSENT` or into `PRESENT` in either direction.
-Root Guard is always `UNTESTED`, because testing it would mean sending a BPDU
-superior to the current root, which this tool will not do. IPv6 RA Guard stays
-`UNTESTED` when only one router is advertising, for the same reason: proving it
-absent would mean sending a router advertisement.
+`UNTESTED` is not a pass, and neither is a missing capability. A control the
+host could not test reports UNTESTED with a reason, never ABSENT.
 
-The `--json` output carries a per-protocol record count alongside `frames_seen`,
-which is how you tell a segment that was genuinely quiet from a capture that
-went wrong. It also reports `parse_errors`, and `truncated` names any check that
-hit the per-check record cap, so a capped result is never mistaken for a
-complete one.
+Any check measuring reachability from the sending side alone returns
+INDETERMINATE without a cooperating observer. A local timeout does not
+distinguish a filter from a dead host, and most consumer NAT answers a hairpin
+test differently from the outside world.
 
-## Testing it yourself
+Exit codes: 0 no control absent, 1 one or more absent, 2 input, config or
+authorisation error.
 
-`lab/build_lab.sh` builds a topology on one machine with Open vSwitch and
-network namespaces: one bridge with RSTP enabled, two access ports in different
-VLANs, a trunk with the native VLAN left at 1, and two namespaces with
-addresses. `--teardown` removes it.
+## Practical warnings
 
-```
-sudo ./lab/build_lab.sh
-netcheck listen --interface l2trunk --duration 30
-sudo ./lab/build_lab.sh --teardown
-```
+Consumer routers crash. A fragmented packet, a malformed UPnP request or a UDP
+sweep will occasionally take down the web server or the whole box. The abort
+watcher detects an unresponsive gateway and halts, recording which check was in
+flight. That record is a finding worth writing up.
 
-Building the lab needs root because it creates bridges and namespaces. Capturing
-on it does not, once `setup.sh` has run.
+Know the reset path before starting. Export the router config, note the admin
+password, find the physical reset button. L3A06 writes state to the router and a
+failed cleanup leaves a mapping behind.
 
-Open vSwitch does not implement CDP, DTP, VTP, BPDU Guard, DHCP Snooping,
-Dynamic ARP Inspection or port security. The lab exercises the parsers, the
-spanning tree probe and the double tagging probe; the vendor specific checks
-need real switch hardware or a vendor image. `lab/README.md` lists exactly which
-is which.
+Home routers rate limit ICMP and UDP under load. Keep the send rate low and
+treat silence as INDETERMINATE. A fast scan produces a report full of confident
+wrong answers, which is worse than no report.
 
-## Limits
+CGNAT is common. If the WAN address is inside 100.64.0.0/10, external inbound
+testing cannot work. `doctor` detects this and L3A05 reports UNTESTED with
+reason `cgnat`, never PRESENT.
 
-This tests one port on one segment. A full posture table from a single port
-describes that port, not the network: the switch next to it may be configured
-differently, and the same tool on the next patch panel can return a different
-answer.
+Test when nobody else needs the network. The active checks will drop the
+connection at least once.
 
-Absence of a reaction is not always proof a control is missing. Port security in
-`restrict` or `protect` mode drops frames silently and looks identical from the
-port to no port security at all, which is why that probe reports
-`INDETERMINATE` rather than `ABSENT`. The same applies to anything filtered
-upstream of where the tool is listening.
+## Status
 
-Some probes cannot conclude anything on their own. L2A05 and L2A06 test one way
-delivery, so without a cooperating observer on the target segment they report
-`INDETERMINATE` and say so, rather than claiming a negative.
-
-Passive checks only report what arrived during the capture window. A segment
-that was quiet for two minutes has not been shown to be free of anything.
-
-CFG02 describes the machine running the tool, not the network. It has its own
-report section saying so, because a reader skimming a network report will
-otherwise attribute a missing host firewall to the router.
-
-CFG03 compares a detected model against `l2check/data/advisories.json`, which
-ships empty. With no entry for your device the check reports `UNTESTED`, not a
-pass. Filling it in is described in `docs/ADVISORIES.md`.
-
-On a wireless link you see less than on a switch port, and the difference is not
-the tool. Per-station encryption means another client's unicast traffic never
-reaches you, the access point strips VLAN tags before frames arrive, and it does
-not forward spanning tree or discovery traffic to clients. Many consumer access
-points also suppress or rate-limit multicast, which thins out even the checks
-that should work. A wireless run that finds little is describing the medium as
-much as the network.
+Milestone 1 of six is built: the platform capability layer, the posture model,
+config discovery, profiles, both budgets, the abort watcher, the check registry,
+the report, `doctor`, packaging and continuous integration. No checks are
+registered yet, so every control reports UNTESTED with reason `not_selected`.

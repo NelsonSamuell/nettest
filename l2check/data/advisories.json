@@ -1,7 +1,0 @@
-{
-  "schema": 1,
-  "updated": "",
-  "source": "",
-  "note": "Curate this yourself. It ships empty on purpose: an advisory file with invented entries would make CFG03 report findings that are not true. With no entry for a detected model, CFG03 reports UNTESTED. See docs/ADVISORIES.md.",
-  "entries": []
-}

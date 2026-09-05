@@ -1,0 +1,12 @@
+# Required by the engagement profile only. Every field must be present and
+# non-empty, today must fall inside the window, and every target subnet must sit
+# inside scope_subnets.
+client: Example Ltd
+engagement: Internal network assessment
+authorised_by: Jane Mwangi, Head of Infrastructure
+contact: jane@example.co.ke
+issued: 2026-09-01
+expires: 2026-09-14
+segment: Floor 3 user VLAN, patch panel port 3-14
+scope_subnets:
+  - 192.0.2.0/24

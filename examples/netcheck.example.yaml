@@ -1,0 +1,26 @@
+# Targets, not permission. Every field defaults from the routing table, so this
+# file is optional for a plain LAN run.
+targets:
+  subnets:
+    - 192.0.2.0/24
+    - 2001:db8:abcd::/64
+  gateway: 192.0.2.1
+  guest_subnet: 198.51.100.0/24
+
+exclude:
+  - 192.0.2.50
+
+observers:
+  internal: 192.0.2.20:9001
+  external: observer.example.net:9001
+
+external:
+  echo_service: https://example.net/ip
+  authoritative_ns: ns.example.net
+  test_host: observer.example.net
+
+limits:
+  rate_pps: 200
+  frame_budget: 600
+  packet_budget: 5000
+  runtime_minutes: 15

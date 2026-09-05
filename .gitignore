@@ -8,5 +8,6 @@ dist/
 venv/
 env/
 
-# Scan output. It describes a real network, so keep it out of the repository.
+# Run output describes a real network, so keep it out of the repository.
 posture.json
+*.report.json
