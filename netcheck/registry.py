@@ -152,6 +152,7 @@ class Context:
     tls_reader: Callable | None = None
     http_client: Callable | None = None
     cleanup: list = field(default_factory=list)
+    local_address: str = ""
     tcp_open: dict = field(default_factory=dict)
     management_services: list = field(default_factory=list)
 
@@ -278,6 +279,31 @@ class Context:
             return None
         asker = self.observer_query or _default_observer_query
         return asker(target, token, timeout)
+
+    def address(self) -> str:
+        """This interface's own address.
+
+        Resolved once and held here rather than looked up by each check, so a
+        check never depends on an interface existing under a particular name.
+        """
+        if not self.local_address:
+            from netcheck.platform import interfaces as interfaces_module
+
+            entry = interfaces_module.interface_named(self.interface)
+            self.local_address = entry.address if entry else ""
+        return self.local_address
+
+    def link_up(self) -> bool:
+        """Whether this interface is up.
+
+        The link dropping is the positive result for BPDU Guard and port
+        security, so it is read here rather than in the checks, which keeps them
+        testable without an interface of that name existing.
+        """
+        from netcheck.platform import interfaces as interfaces_module
+
+        entry = interfaces_module.interface_named(self.interface)
+        return bool(entry and entry.up)
 
     def resolve(self, name: str) -> str:
         """A configured name as an address, or an empty string.

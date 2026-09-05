@@ -24,6 +24,9 @@ from scapy.utils import PcapWriter, rdpcap
 from netcheck.l2 import frames, parse
 from netcheck.models import Capture
 
+# Explicit so no fixture depends on a default interface existing.
+FIXTURE_MAC = "00:00:5e:00:53:ff"
+
 SWITCH = "00:00:5e:00:53:01"
 HOST = "00:00:5e:00:53:0a"
 PROBE = frames.probe_mac(1)
@@ -77,7 +80,7 @@ def test_l2p01_via_lldp(tmp_path):
 
 
 def test_l2p01_ignores_unrelated_frames(tmp_path):
-    packet = one(tmp_path, Ether() / IP() / UDP())
+    packet = one(tmp_path, Ether(src=FIXTURE_MAC) / IP() / UDP())
     assert parse.parse_cdp(packet) is None
     assert parse.parse_lldp(packet) is None
 
@@ -118,9 +121,9 @@ def test_l2p04_vtp(tmp_path):
 
 
 def test_l2p06_tagged_frames(tmp_path):
-    records = parse.parse_tagged(one(tmp_path, Ether() / Dot1Q(vlan=1) / Dot1Q(vlan=20) / IP()))
+    records = parse.parse_tagged(one(tmp_path, Ether(src=FIXTURE_MAC) / Dot1Q(vlan=1) / Dot1Q(vlan=20) / IP()))
     assert [r.vlan for r in records] == [1, 20]
-    assert parse.parse_tagged(one(tmp_path, Ether() / IP())) == []
+    assert parse.parse_tagged(one(tmp_path, Ether(src=FIXTURE_MAC) / IP())) == []
 
 
 def dhcp_offer(mac, ip):
@@ -146,7 +149,7 @@ def test_l2p07_ignores_a_client_discover(tmp_path):
 def test_l2p08_gratuitous_arp(tmp_path):
     record = parse.parse_arp(one(tmp_path, Ether(frames.gratuitous_arp(HOST, "192.0.2.1"))))
     assert record.gratuitous and record.claimed_ip == "192.0.2.1"
-    ordinary = one(tmp_path, Ether() / ARP(op=1, psrc="192.0.2.7", pdst="192.0.2.1"))
+    ordinary = one(tmp_path, Ether(src=FIXTURE_MAC) / ARP(op=1, psrc="192.0.2.7", pdst="192.0.2.1"))
     assert not parse.parse_arp(ordinary).gratuitous
 
 
@@ -167,7 +170,7 @@ def test_l2p09_name_queries(tmp_path):
 
 def test_l2p09_ignores_responses(tmp_path):
     packet = (
-        Ether() / IP(dst="224.0.0.252") / UDP(sport=5355, dport=5355)
+        Ether(src=FIXTURE_MAC) / IP(dst="224.0.0.252") / UDP(sport=5355, dport=5355)
         / DNS(qr=1, qd=DNSQR(qname="fileserver"))
     )
     assert parse.parse_name_query(one(tmp_path, packet)) is None
@@ -183,7 +186,7 @@ def test_l2p10_hsrp_records_only_whether_authentication_is_present(tmp_path):
     assert not record.authenticated
 
     secret = (
-        Ether() / IP(src="192.0.2.2", dst="224.0.0.2")
+        Ether(src=FIXTURE_MAC) / IP(src="192.0.2.2", dst="224.0.0.2")
         / UDP(sport=1985, dport=1985) / HSRP(group=1, auth=b"s3cret\x00\x00")
     )
     withauth = parse.parse_fhrp(one(tmp_path, secret))
@@ -193,7 +196,7 @@ def test_l2p10_hsrp_records_only_whether_authentication_is_present(tmp_path):
 
 def test_l2p10_vrrp(tmp_path):
     packet = (
-        Ether() / IP(src="192.0.2.2", dst="224.0.0.18", proto=112)
+        Ether(src=FIXTURE_MAC) / IP(src="192.0.2.2", dst="224.0.0.18", proto=112)
         / VRRP(vrid=5, priority=120, addrlist=["192.0.2.1"], authtype=0)
     )
     record = parse.parse_fhrp(one(tmp_path, packet))
@@ -201,10 +204,10 @@ def test_l2p10_vrrp(tmp_path):
 
 
 def test_l2p11_cleartext(tmp_path):
-    packet = one(tmp_path, Ether() / IP(src="192.0.2.7", dst="192.0.2.2") / TCP(dport=23))
+    packet = one(tmp_path, Ether(src=FIXTURE_MAC) / IP(src="192.0.2.7", dst="192.0.2.2") / TCP(dport=23))
     record = parse.parse_cleartext(packet)
     assert record.protocol == "Telnet"
-    encrypted = one(tmp_path, Ether() / IP() / TCP(dport=22))
+    encrypted = one(tmp_path, Ether(src=FIXTURE_MAC) / IP() / TCP(dport=22))
     assert parse.parse_cleartext(encrypted) is None
 
 
@@ -227,7 +230,7 @@ def test_l2p13_service_announcements(tmp_path):
     )
     record = parse.parse_service(one(tmp_path, packet))
     assert record.protocol == "SSDP" and "MediaServer" in record.service_type
-    noise = one(tmp_path, Ether() / IP() / UDP(sport=1900, dport=1900) / b"\x00\x01")
+    noise = one(tmp_path, Ether(src=FIXTURE_MAC) / IP() / UDP(sport=1900, dport=1900) / b"\x00\x01")
     assert parse.parse_service(noise) is None
 
 

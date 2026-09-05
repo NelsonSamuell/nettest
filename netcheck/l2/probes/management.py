@@ -29,13 +29,6 @@ OBSERVER_SECONDS = 5
 MANAGEMENT_PORT = 443
 
 
-def _local_address(context) -> str:
-    from netcheck.platform import interfaces as interfaces_module
-
-    entry = interfaces_module.interface_named(context.interface)
-    return entry.address if entry else ""
-
-
 def run_client_isolation(context) -> tuple:
     """L2A08. Two frames to another host, confirmed by an observer on it."""
     if not context.observer:
@@ -46,7 +39,7 @@ def run_client_isolation(context) -> tuple:
             "running on it" % NO_OBSERVER,
         )
     target = context.observer.rsplit(":", 1)[0]
-    source_ip = _local_address(context)
+    source_ip = context.address()
     if not source_ip:
         return (
             UNTESTED,
@@ -85,7 +78,7 @@ def run_management_reachable(context) -> tuple:
             "%s: L2P01 disclosed no switch management address" % PREREQUISITE_MISSING,
         )
 
-    source_ip = _local_address(context)
+    source_ip = context.address()
     if not source_ip:
         return (
             UNTESTED,

@@ -27,7 +27,10 @@ def context(**kwargs):
     replies = kwargs.pop("replies", [])
     sent = kwargs.pop("sent", [])
     saw = kwargs.pop("saw", None)
-    defaults = dict(interface="lo", budget=Budget(), capture=Capture(), max_macs=50)
+    # The address is injected, so no test depends on an interface existing under
+    # a particular name. Interface names differ on every platform.
+    defaults = dict(interface="probe0", budget=Budget(), capture=Capture(),
+                    max_macs=50, local_address="192.0.2.9")
     defaults.update(kwargs)
     made = Context(**defaults)
     made.sender = lambda i, f: sent.append(f)
@@ -210,7 +213,7 @@ def test_a_batch_beyond_the_budget_spends_nothing():
 
 
 def test_nothing_sends_before_the_context_is_started():
-    made = Context(interface="lo", budget=Budget())
+    made = Context(interface="probe0", budget=Budget(), local_address="192.0.2.9")
     made.sender = lambda i, f: None
     with pytest.raises(NotStarted):
         made.send_frames(b"\x00" * 60)

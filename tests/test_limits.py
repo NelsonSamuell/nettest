@@ -149,7 +149,7 @@ def test_no_check_module_sends_without_going_through_the_context():
 def test_a_check_cannot_send_before_the_context_is_started():
     from netcheck.registry import Context, NotStarted
 
-    made = Context(interface="lo", budget=Budget())
+    made = Context(interface="probe0", budget=Budget())
     made.sender = lambda i, f: pytest.fail("must not send")
     with pytest.raises(NotStarted):
         made.send_frames(b"\x00" * 60)

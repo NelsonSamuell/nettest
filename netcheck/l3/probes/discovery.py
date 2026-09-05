@@ -58,11 +58,7 @@ def run_host_discovery(context):
     if not addresses:
         return _refused("L3A01", "no target subnet; set one in the targets file")
 
-    source = ""
-    from netcheck.platform import interfaces as interfaces_module
-
-    entry = interfaces_module.interface_named(context.interface)
-    source = entry.address if entry else ""
+    source = context.address()
     if not source:
         return _refused("L3A01", "this interface has no address to send from")
 

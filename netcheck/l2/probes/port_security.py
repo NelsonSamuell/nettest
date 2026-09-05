@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from netcheck.l2 import frames
 from netcheck.models import INDETERMINATE, PRESENT
-from netcheck.platform import interfaces as interfaces_module
 
 GAP_SECONDS = 0.2
 SETTLE_SECONDS = 1.0
@@ -24,8 +23,7 @@ def run(context) -> tuple:
     from netcheck.budget import LAYER2
 
     limit = min(context.max_macs, context.budget.remaining(LAYER2))
-    entry = interfaces_module.interface_named(context.interface)
-    before = bool(entry and entry.up)
+    before = context.link_up()
     context.expect_link_change = True
 
     sent = 0
@@ -33,8 +31,7 @@ def run(context) -> tuple:
         context.send_frames(frames.arp_probe(mac, TARGET_IP))
         sent += 1
         context.sleeper(GAP_SECONDS)
-        entry = interfaces_module.interface_named(context.interface)
-        if before and not (entry and entry.up):
+        if before and not context.link_up():
             return PRESENT, "L2A03", "the port went down at address %d" % sent
 
     context.sleeper(SETTLE_SECONDS)

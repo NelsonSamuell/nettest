@@ -10,6 +10,9 @@ from netcheck.l2.parse import parse_frame
 from netcheck.l3 import parse as l3
 from netcheck.models import Capture
 
+# Explicit so no fixture depends on a default interface existing.
+FIXTURE_MAC = "00:00:5e:00:53:ff"
+
 HOST = "00:00:5e:00:53:0a"
 ROUTER = "00:00:5e:00:53:01"
 
@@ -52,18 +55,18 @@ def test_l3p03_records_the_resolver(tmp_path):
                  / UDP(sport=5000, dport=53) / DNS(rd=1, qd=DNSQR(qname="example.com")))
     record = l3.parse_resolver(packet)
     assert record.resolver_ip == "10.0.0.1" and record.transport == "Do53"
-    encrypted = one(tmp_path, Ether() / IP(dst="10.0.0.1") / TCP(dport=853))
+    encrypted = one(tmp_path, Ether(src=FIXTURE_MAC) / IP(dst="10.0.0.1") / TCP(dport=853))
     assert l3.parse_resolver(encrypted).transport == "DoT"
 
 
 def test_l3p03_ignores_a_response(tmp_path):
-    packet = one(tmp_path, Ether() / IP() / UDP(sport=53, dport=5000)
+    packet = one(tmp_path, Ether(src=FIXTURE_MAC) / IP() / UDP(sport=53, dport=5000)
                  / DNS(qr=1, qd=DNSQR(qname="a.com")))
     assert l3.parse_resolver(packet) is None
 
 
 def test_l3p03_flags_an_external_name_answered_privately(tmp_path):
-    packet = one(tmp_path, Ether() / IP(src="10.0.0.1", dst="10.0.0.6")
+    packet = one(tmp_path, Ether(src=FIXTURE_MAC) / IP(src="10.0.0.1", dst="10.0.0.6")
                  / UDP(sport=53, dport=5000)
                  / DNS(qr=1, ancount=1, qd=DNSQR(qname="tracker.example.net"),
                        an=DNSRR(rrname="tracker.example.net", type="A", rdata="10.0.0.1")))
@@ -72,7 +75,7 @@ def test_l3p03_flags_an_external_name_answered_privately(tmp_path):
 
 
 def test_l3p03_ignores_a_normal_public_answer(tmp_path):
-    packet = one(tmp_path, Ether() / IP() / UDP(sport=53, dport=5000)
+    packet = one(tmp_path, Ether(src=FIXTURE_MAC) / IP() / UDP(sport=53, dport=5000)
                  / DNS(qr=1, ancount=1, qd=DNSQR(qname="example.com"),
                        an=DNSRR(rrname="example.com", type="A", rdata="93.184.216.34")))
     assert l3.parse_dns_answer(packet) is None
@@ -97,41 +100,41 @@ def test_l3p04_spots_an_address_derived_from_the_mac(tmp_path):
 
 
 def test_l3p06_reports_a_redirect(tmp_path):
-    packet = one(tmp_path, Ether() / IP(src="10.0.0.1") / ICMP(type=5, gw="10.0.0.66"))
+    packet = one(tmp_path, Ether(src=FIXTURE_MAC) / IP(src="10.0.0.1") / ICMP(type=5, gw="10.0.0.66"))
     record = l3.parse_icmp(packet)
     assert record.kind == "redirect" and "10.0.0.66" in record.detail
-    assert l3.parse_icmp(one(tmp_path, Ether() / IPv6(src="fe80::1") / ICMPv6ND_Redirect())).kind == "redirect"
-    assert l3.parse_icmp(one(tmp_path, Ether() / IP() / ICMP(type=8))) is None
+    assert l3.parse_icmp(one(tmp_path, Ether(src=FIXTURE_MAC) / IPv6(src="fe80::1") / ICMPv6ND_Redirect())).kind == "redirect"
+    assert l3.parse_icmp(one(tmp_path, Ether(src=FIXTURE_MAC) / IP() / ICMP(type=8))) is None
 
 
 def test_l3p02_records_the_port(tmp_path):
-    packet = one(tmp_path, Ether() / IP(src="10.0.0.7", dst="10.0.0.1") / TCP(dport=23))
+    packet = one(tmp_path, Ether(src=FIXTURE_MAC) / IP(src="10.0.0.7", dst="10.0.0.1") / TCP(dport=23))
     protocol, source, destination, port = l3.parse_cleartext(packet)
     assert protocol == "Telnet" and port == 23
-    assert l3.parse_cleartext(one(tmp_path, Ether() / IP() / TCP(dport=22))) is None
+    assert l3.parse_cleartext(one(tmp_path, Ether(src=FIXTURE_MAC) / IP() / TCP(dport=22))) is None
 
 
 def test_l3p07_only_records_internal_to_external(tmp_path):
-    outward = one(tmp_path, Ether() / IP(src="10.0.0.8", dst="140.82.121.4") / TCP(dport=443))
+    outward = one(tmp_path, Ether(src=FIXTURE_MAC) / IP(src="10.0.0.8", dst="140.82.121.4") / TCP(dport=443))
     assert l3.parse_outbound(outward, "10.0.0.0/24").port == 443
-    internal = one(tmp_path, Ether() / IP(src="10.0.0.8", dst="10.0.0.9") / TCP())
+    internal = one(tmp_path, Ether(src=FIXTURE_MAC) / IP(src="10.0.0.8", dst="10.0.0.9") / TCP())
     assert l3.parse_outbound(internal, "10.0.0.0/24") is None
-    foreign = one(tmp_path, Ether() / IP(src="172.16.0.9", dst="140.82.121.4") / TCP())
+    foreign = one(tmp_path, Ether(src=FIXTURE_MAC) / IP(src="172.16.0.9", dst="140.82.121.4") / TCP())
     assert l3.parse_outbound(foreign, "10.0.0.0/24") is None
 
 
 def test_l3p08_detects_both_fragment_shapes(tmp_path):
-    assert l3.parse_fragment(one(tmp_path, Ether() / IP(src="10.0.0.10", flags=1) / UDP())).family == 4
-    assert l3.parse_fragment(one(tmp_path, Ether() / IP(src="10.0.0.10", frag=4) / UDP())).family == 4
-    assert l3.parse_fragment(one(tmp_path, Ether() / IP(src="10.0.0.10") / UDP())) is None
+    assert l3.parse_fragment(one(tmp_path, Ether(src=FIXTURE_MAC) / IP(src="10.0.0.10", flags=1) / UDP())).family == 4
+    assert l3.parse_fragment(one(tmp_path, Ether(src=FIXTURE_MAC) / IP(src="10.0.0.10", frag=4) / UDP())).family == 4
+    assert l3.parse_fragment(one(tmp_path, Ether(src=FIXTURE_MAC) / IP(src="10.0.0.10") / UDP())) is None
 
 
 def test_l3p10_only_flags_hop_limits_off_a_flat_segment(tmp_path):
-    assert l3.parse_hop_count(one(tmp_path, Ether() / IP(src="10.0.0.12", ttl=61) / TCP())).hop_limit == 61
+    assert l3.parse_hop_count(one(tmp_path, Ether(src=FIXTURE_MAC) / IP(src="10.0.0.12", ttl=61) / TCP())).hop_limit == 61
     for normal in (64, 128, 255):
-        packet = one(tmp_path, Ether() / IP(src="10.0.0.12", ttl=normal) / TCP())
+        packet = one(tmp_path, Ether(src=FIXTURE_MAC) / IP(src="10.0.0.12", ttl=normal) / TCP())
         assert l3.parse_hop_count(packet) is None
-    assert l3.parse_hop_count(one(tmp_path, Ether() / IP(src="8.8.8.8", ttl=57) / TCP())) is None
+    assert l3.parse_hop_count(one(tmp_path, Ether(src=FIXTURE_MAC) / IP(src="8.8.8.8", ttl=57) / TCP())) is None
 
 
 def test_the_layer_three_parsers_run_inside_the_same_guarded_loop(tmp_path):
@@ -139,7 +142,7 @@ def test_the_layer_three_parsers_run_inside_the_same_guarded_loop(tmp_path):
         Ether(src=HOST) / IP(src="10.0.0.5", dst="8.8.8.8") / TCP(dport=443),
         Ether(src=ROUTER) / IP(src="10.0.0.1") / ICMP(type=5, gw="10.0.0.66"),
     ])
-    capture = Capture(interface="lo", local_network="10.0.0.0/24")
+    capture = Capture(interface="probe0", local_network="10.0.0.0/24")
     for packet in packets:
         parse_frame(packet, capture)
     assert capture.frames_seen == 2

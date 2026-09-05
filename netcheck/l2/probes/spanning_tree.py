@@ -30,7 +30,6 @@ from __future__ import annotations
 from netcheck.l2 import frames
 from netcheck.l2.frames import UnsafeFrameError
 from netcheck.models import ABSENT, PREREQUISITE_MISSING, PRESENT, UNTESTED
-from netcheck.platform import interfaces as interfaces_module
 
 WATCH_SECONDS = 15
 POLL_SECONDS = 0.5
@@ -47,8 +46,7 @@ def run(context) -> tuple:
     except UnsafeFrameError as error:
         return UNTESTED, IDENTIFIER, "%s: %s" % (PREREQUISITE_MISSING, error)
 
-    entry = interfaces_module.interface_named(context.interface)
-    before = bool(entry and entry.up)
+    before = context.link_up()
     # The reaction being measured is the link dropping, so the abort watcher
     # must not treat it as the unexpected change that halts the run.
     context.expect_link_change = True
@@ -57,8 +55,7 @@ def run(context) -> tuple:
     deadline = context.clock() + WATCH_SECONDS
     while context.clock() < deadline:
         context.sleeper(POLL_SECONDS)
-        entry = interfaces_module.interface_named(context.interface)
-        if before and not (entry and entry.up):
+        if before and not context.link_up():
             return (
                 PRESENT,
                 IDENTIFIER,

@@ -154,10 +154,7 @@ def run(context):
             [],
         )
 
-    from netcheck.platform import interfaces as interfaces_module
-
-    entry = interfaces_module.interface_named(context.interface)
-    local_ip = entry.address if entry else ""
+    local_ip = context.address()
     if not local_ip:
         return UNTESTED, "L3A06", "%s: no local address" % PREREQUISITE_MISSING, []
 

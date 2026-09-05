@@ -128,8 +128,21 @@ def test_the_platform_package_is_where_the_branch_lives():
 
 
 def test_no_source_file_hardcodes_an_interface_name():
+    """Interface names differ on every platform, so none may be assumed."""
     for path in SOURCE.rglob("*.py"):
-        assert "eth0" not in path.read_text(), "%s hardcodes an interface name" % path
+        text = path.read_text()
+        for name in ("eth0", "en0", "wlan0", "lo0"):
+            assert name not in text, "%s hardcodes the interface name %s" % (path, name)
+
+
+def test_no_test_depends_on_an_interface_existing_by_name():
+    """A test that needs a live interface passes on the author's machine only."""
+    for path in pathlib.Path("tests").glob("*.py"):
+        text = path.read_text()
+        # Built at runtime so this file does not match its own literals.
+        for name in ("lo", "eth0", "en0", "lo0"):
+            needle = 'interface="%s"' % name
+            assert needle not in text, "%s depends on %s existing" % (path, name)
 
 
 def test_no_absolute_path_is_used_to_load_package_data():

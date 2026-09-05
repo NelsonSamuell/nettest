@@ -29,7 +29,6 @@ from netcheck.models import (
     UNTESTED,
     Finding,
 )
-from netcheck.platform import interfaces as interfaces_module
 
 CONTROL = "ICMP redirect handling"
 SETTLE_SECONDS = 2
@@ -278,8 +277,7 @@ def _flush(destination: str) -> None:
 def run(context):
     """Whether this host installs a route from one ICMP redirect."""
     gateway = getattr(context.config, "gateway", "") if context.config else ""
-    entry = interfaces_module.interface_named(context.interface)
-    local_ip = entry.address if entry else ""
+    local_ip = context.address()
     if not gateway or not local_ip:
         return (
             UNTESTED,

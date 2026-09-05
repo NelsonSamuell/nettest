@@ -23,7 +23,10 @@ def context(**kwargs):
     replies = kwargs.pop("replies", [])
     sent = kwargs.pop("sent", [])
     ports = kwargs.pop("ports", {})
-    defaults = dict(interface="lo", budget=Budget(), capture=Capture(),
+    # The address is injected, so no test depends on an interface existing under
+    # a particular name. Interface names differ on every platform.
+    defaults = dict(interface="probe0", budget=Budget(), capture=Capture(),
+                    local_address="10.20.0.9",
                     config=Config(gateway="10.20.0.1", subnets=["10.20.0.0/24"]))
     defaults.update(kwargs)
     made = Context(**defaults)
@@ -113,7 +116,6 @@ def test_icmp_redirect_says_it_describes_this_machine(monkeypatch):
     monkeypatch.setattr(filtering, "_route_to", lambda d: "unchanged")
     monkeypatch.setattr(filtering, "_flush", lambda d: None)
     made = context()
-    made.interface = _an_interface_with_an_address()
     state, _, detail, _ = filtering.run(made)
     assert state == PRESENT
     assert "not the network" in detail
@@ -125,20 +127,10 @@ def test_icmp_redirect_detects_an_installed_route(monkeypatch):
     flushed = []
     monkeypatch.setattr(filtering, "_flush", flushed.append)
     made = context()
-    made.interface = _an_interface_with_an_address()
     state, _, _, findings = filtering.run(made)
     assert state == ABSENT
     assert flushed, "the route must be removed whatever the answer"
     assert findings
-
-
-def _an_interface_with_an_address() -> str:
-    from netcheck.platform import interfaces as interfaces_module
-
-    for entry in interfaces_module.list_interfaces():
-        if entry.address:
-            return entry.name
-    return "lo"
 
 
 # Budget tests.
@@ -147,7 +139,6 @@ def test_host_discovery_respects_the_packet_budget():
     sent = []
     made = context(sent=sent, budget=Budget(packets=10),
                    config=Config(subnets=["10.20.0.0/24"], gateway="10.20.0.1"))
-    made.interface = _an_interface_with_an_address()
     discovery.run_host_discovery(made)
     assert len(sent) == 10
     assert made.budget.remaining(LAYER3) == 0
@@ -182,7 +173,6 @@ def test_the_redirect_check_sends_exactly_one_packet(monkeypatch):
     monkeypatch.setattr(filtering, "_flush", lambda d: None)
     sent = []
     made = context(sent=sent)
-    made.interface = _an_interface_with_an_address()
     filtering.run(made)
     assert len(sent) == 1
 
@@ -196,7 +186,7 @@ def test_the_two_budgets_stay_independent():
 
 
 def test_nothing_sends_before_the_context_is_started():
-    made = Context(interface="lo", budget=Budget())
+    made = Context(interface="probe0", budget=Budget(), local_address="10.20.0.9")
     made.packet_sender = lambda i, p: pytest.fail("must not send")
     with pytest.raises(NotStarted):
         made.send_packets(packets.tcp_syn("10.20.0.1", 80))
@@ -215,7 +205,6 @@ def test_a_mapping_that_cannot_be_deleted_halts_the_run(monkeypatch):
 
     monkeypatch.setattr(upnp, "_soap", soap)
     made = context()
-    made.interface = _an_interface_with_an_address()
     with pytest.raises(upnp.CleanupFailed) as excinfo:
         upnp.run(made)
     assert "Remove it by hand" in str(excinfo.value)
@@ -233,7 +222,6 @@ def test_cleanup_is_registered_before_the_mapping_is_made(monkeypatch):
         return 200, "", url
 
     made = context()
-    made.interface = _an_interface_with_an_address()
     original = upnp._register_cleanup
 
     def spy(context_, control):
@@ -254,7 +242,6 @@ def test_a_successful_delete_makes_the_exit_handler_a_no_op(monkeypatch):
     monkeypatch.setattr(upnp, "_soap",
                         lambda c, u, a, b: (calls.append(a), (200, "", u))[1])
     made = context()
-    made.interface = _an_interface_with_an_address()
     state, _, _, _ = upnp.run(made)
     assert state == ABSENT
     before = len(calls)
@@ -266,7 +253,6 @@ def test_a_refused_mapping_is_present():
     import netcheck.l3.probes.upnp as module
 
     made = context()
-    made.interface = _an_interface_with_an_address()
     original_discover, original_url, original_soap = (
         module._discover, module._control_url, module._soap
     )
