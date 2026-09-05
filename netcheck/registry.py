@@ -144,6 +144,8 @@ class Context:
     sender: Callable[[str, bytes], None] | None = None
     collector: Callable | None = None
     observer_query: Callable | None = None
+    observer_connect: Callable | None = None
+    resolver: Callable | None = None
     packet_sender: Callable | None = None
     classifier: Callable | None = None
     banner_reader: Callable | None = None
@@ -253,22 +255,47 @@ class Context:
         self.budget.spend(LAYER3, 1)
         return (self.http_client or _default_http)(url, timeout, data, headers)
 
+    def ask_observer_connect(self, endpoint: str, host: str, port: int,
+                             timeout: float = 5.0):
+        """Ask an external observer to attempt a connection from its side."""
+        asker = self.observer_connect or _default_observer_connect
+        return asker(endpoint, host, port, timeout)
+
     def collect(self, seconds: float, match):
         """Listen for matching replies while a check is sending."""
         collector = self.collector or _default_collector
         return collector(self.interface, seconds, match)
 
-    def ask_observer(self, token: str, timeout: float = 5.0):
-        """Whether the observer saw a token, or None if it could not be reached.
+    def ask_observer(self, token: str, timeout: float = 5.0, endpoint: str = ""):
+        """Whether an observer saw a token, or None if it could not be reached.
 
-        Routed through the context for the same reason sending is: it is the
-        one place a check reaches anything outside itself, and it keeps the
-        query out of the checks so they stay testable without a socket.
+        Routed through the context for the same reason sending is: it is the one
+        place a check reaches anything outside itself, and it keeps the query out
+        of the checks so they stay testable without a socket.
         """
-        if not self.observer:
+        target = endpoint or self.observer
+        if not target:
             return None
         asker = self.observer_query or _default_observer_query
-        return asker(self.observer, token, timeout)
+        return asker(target, token, timeout)
+
+    def resolve(self, name: str) -> str:
+        """A configured name as an address, or an empty string.
+
+        Not counted: it goes through the system resolver like any other lookup
+        and is not a probe of the target. A name that does not resolve makes the
+        check refuse rather than raise mid run.
+        """
+        if not name:
+            return ""
+        import ipaddress
+
+        try:
+            ipaddress.ip_address(name)
+            return name
+        except ValueError:
+            pass
+        return (self.resolver or _default_resolver)(name)
 
 
 class NotStarted(Exception):
@@ -279,6 +306,22 @@ def _default_sender(interface: str, frame: bytes) -> None:
     from netcheck.platform.sockets import send_frame
 
     send_frame(interface, frame)
+
+
+def _default_resolver(name: str) -> str:
+    import socket
+
+    try:
+        info = socket.getaddrinfo(name, None)
+    except OSError:
+        return ""
+    return info[0][4][0] if info else ""
+
+
+def _default_observer_connect(endpoint: str, host: str, port: int, timeout: float):
+    from netcheck.observe import ask_connect
+
+    return ask_connect(endpoint, host, port, timeout)
 
 
 def _default_packet_sender(interface: str, packet) -> None:

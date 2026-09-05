@@ -258,6 +258,96 @@ def from_dict(document: dict) -> tuple[Posture, list[Finding]]:
     return posture, findings
 
 
+def to_markdown(document: dict, posture: Posture, findings: Iterable[Finding]) -> str:
+    """The same report as Markdown, for pasting into notes or a ticket."""
+    findings = list(findings)
+    lines = ["# netcheck report", "", "## Run", ""]
+    lines.append("- Profile: %s" % document.get("profile", ""))
+    if document.get("profile") == "self":
+        lines.append("- This is a self test of a network the operator owns. It is "
+                     "not a client deliverable.")
+    run = document.get("config") or {}
+    capture = document.get("capture") or {}
+    for label, value in (
+        ("Config", run.get("source")),
+        ("Gateway", run.get("gateway")),
+        ("Subnets", ", ".join(run.get("subnets", []))),
+        ("Interface", capture.get("interface") or document.get("interface")),
+        ("Started", document.get("started")),
+        ("Finished", document.get("finished")),
+        ("Version", document.get("version")),
+        ("Commit", document.get("commit")),
+        ("Frames seen", capture.get("frames_seen")),
+        ("Packets seen", capture.get("packets_seen")),
+    ):
+        if value not in (None, "", []):
+            lines.append("- %s: %s" % (label, value))
+    authorisation = document.get("authorisation")
+    if authorisation:
+        lines.append("- Authorisation: %s (sha256 %s)"
+                     % (authorisation.get("file"), authorisation.get("sha256")))
+
+    matrix = document.get("reachability") or {}
+    if matrix:
+        segments = sorted({key.split(">")[0] for key in matrix})
+        lines += ["", "## Reachability", "",
+                  "| from \\ to | " + " | ".join(segments) + " |",
+                  "| --- |" + " --- |" * len(segments)]
+        for source in segments:
+            row = [str(matrix.get("%s>%s" % (source, d), "untested")) for d in segments]
+            lines.append("| %s | %s |" % (source, " | ".join(row)))
+
+    devices = document.get("devices") or []
+    if devices:
+        lines += ["", "## Devices", "", "| MAC | Addresses | Segment |",
+                  "| --- | --- | --- |"]
+        for device in devices:
+            addresses = ", ".join(device.get("ipv4", []) + device.get("ipv6", []))
+            lines.append("| %s | %s | %s |"
+                         % ((device.get("macs") or [""])[0], addresses or "-",
+                            device.get("segment", "-")))
+
+    lines += ["", "## Posture", ""]
+    for layer, title in LAYER_TITLES:
+        rows = [c for c in posture.controls.values() if c.layer == layer]
+        if not rows:
+            continue
+        lines += ["### %s" % title, "", "| Control | State | Basis | Detail |",
+                  "| --- | --- | --- | --- |"]
+        for control in rows:
+            lines.append("| %s | %s | %s | %s |"
+                         % (control.name, control.state, control.basis, control.detail))
+        lines.append("")
+
+    lines += ["## Findings", ""]
+    if findings:
+        lines += ["| Severity | Check | Finding | What would change the answer |",
+                  "| --- | --- | --- | --- |"]
+        for finding in findings:
+            lines.append("| %s | %s | %s | %s |"
+                         % (finding.severity, finding.check, finding.title,
+                            finding.remedy or "-"))
+    else:
+        lines.append("Nothing observed.")
+
+    host = document.get("capture", {}).get("host")
+    if host:
+        lines += ["", "## This machine (not the network)", ""]
+        for key, value in sorted(host.items()):
+            if isinstance(value, list):
+                value = ", ".join(str(item) for item in value) or "-"
+            lines.append("- %s: %s" % (key, value))
+
+    budget = document.get("budget")
+    if budget:
+        lines += ["", "## Budget", ""]
+        for key, value in budget.items():
+            lines.append("- %s: %s" % (key.replace("_", " "), value))
+
+    lines += ["", summary_line(posture), ""]
+    return "\n".join(lines)
+
+
 def diff(previous: dict, current: dict) -> str:
     """What changed between two runs. On a network tested repeatedly this is the signal."""
     before = previous.get("controls", {})

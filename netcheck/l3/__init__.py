@@ -54,7 +54,15 @@ OFFLINE_CHECKS = (
 
 def register(registry: Registry) -> Registry:
     """Add every layer 3 and offline check. Probes import lazily to avoid a cycle."""
-    from netcheck.l3.probes import discovery, filtering, services, upnp
+    from netcheck.l3.probes import (
+        discovery,
+        dns,
+        filtering,
+        segmentation,
+        services,
+        spoofing,
+        upnp,
+    )
 
     active = (
         ("L3A01", "Host discovery", (), SEND, discovery.run_host_discovery, ("L3P01",)),
@@ -66,6 +74,24 @@ def register(registry: Registry) -> Registry:
          SEND, upnp.run, ("L2P13",)),
         ("L3A12", "ICMP redirect acceptance", ("ICMP redirect handling",),
          SEND, filtering.run, ()),
+        ("L3A05", "Inbound reachability, IPv4", ("Inbound filtering, IPv4",),
+         TRANSPORT, filtering.run_inbound_v4, ()),
+        ("L3A07", "Egress filtering", ("Egress filtering",),
+         SEND, filtering.run_egress, ()),
+        ("L3A08", "Inbound reachability, IPv6", ("Inbound filtering, IPv6",),
+         TRANSPORT, filtering.run_inbound_v6, ("L3P04",)),
+        ("L3A09", "Guest segmentation", ("Guest segmentation",),
+         TRANSPORT, segmentation.run, ()),
+        ("L3A10", "DNS rebinding protection", ("DNS rebinding protection",),
+         SEND, dns.run_rebinding, ()),
+        ("L3A11", "Resolver scoping", ("Resolver scoping",),
+         TRANSPORT, dns.run_resolver_scoping, ()),
+        ("L3A13", "Anti-spoofing", ("Anti-spoofing",),
+         SEND, spoofing.run, ()),
+        ("L3A14", "Fragment handling", ("Fragment inspection",),
+         SEND, filtering.run_fragment_handling, ("L3A02",)),
+        ("L3A15", "Source routing", ("Source routing rejected",),
+         SEND, filtering.run_source_routing, ()),
     )
 
     for identifier, title, controls in PASSIVE:

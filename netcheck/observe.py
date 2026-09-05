@@ -20,7 +20,12 @@ INTERNAL = "internal"
 EXTERNAL = "external"
 SIDES = (INTERNAL, EXTERNAL)
 
-USAGE = "ERROR expected: SEEN <token> | SIDE"
+USAGE = "ERROR expected: SEEN <token> | CONNECT <host> <port> | SIDE"
+
+OPEN = "open"
+CLOSED = "closed"
+FILTERED = "filtered"
+CONNECT_TIMEOUT = 4.0
 
 
 class Observer:
@@ -44,6 +49,25 @@ class Observer:
             with self._lock:
                 self.seen |= tokens
 
+    def _connect(self, host: str, port: int) -> str:
+        import errno
+
+        family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        connection = socket.socket(family, socket.SOCK_STREAM)
+        connection.settimeout(CONNECT_TIMEOUT)
+        try:
+            code = connection.connect_ex((host, port))
+        except OSError:
+            return FILTERED
+        finally:
+            connection.close()
+        if code == 0:
+            return OPEN
+        if code in (errno.ECONNREFUSED, errno.ECONNRESET, errno.EHOSTUNREACH,
+                    errno.ENETUNREACH):
+            return CLOSED
+        return FILTERED
+
     def answer(self, line: str) -> str:
         """Handle one query. An unknown verb is refused rather than guessed at."""
         parts = line.strip().split()
@@ -55,6 +79,15 @@ class Observer:
         if verb == "SEEN" and len(parts) == 2:
             with self._lock:
                 return ("YES " if parts[1] in self.seen else "NO ") + parts[1]
+        if verb == "CONNECT" and len(parts) == 3:
+            # Only an external observer will knock on a door for you. An
+            # internal one refusing keeps a check that needs an outside vantage
+            # point from silently getting an inside one.
+            if self.side != EXTERNAL:
+                return "ERROR CONNECT needs an observer started with --side external"
+            if not parts[2].isdigit():
+                return "ERROR port must be a number"
+            return "%s %s %s" % (self._connect(parts[1], int(parts[2])), parts[1], parts[2])
         return USAGE
 
     def serve(self) -> None:
@@ -109,6 +142,18 @@ def ask_seen(endpoint: str, token: str, timeout: float = 5.0) -> bool | None:
     """
     reply = query(endpoint, "SEEN %s" % token, timeout)
     return None if reply is None else reply.startswith("YES ")
+
+
+def ask_connect(endpoint: str, host: str, port: int, timeout: float = 5.0) -> str | None:
+    """Ask an external observer to try a connection and report what happened.
+
+    Returns open, closed or filtered, or None when the observer could not be
+    reached or refused. None is never read as a negative result.
+    """
+    reply = query(endpoint, "CONNECT %s %d" % (host, port), timeout)
+    if reply is None or reply.startswith("ERROR"):
+        return None
+    return reply.split()[0]
 
 
 def ask_side(endpoint: str, timeout: float = 5.0) -> str | None:

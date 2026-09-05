@@ -281,3 +281,175 @@ def test_a_refused_mapping_is_present():
         )
     assert state == PRESENT
     assert "refused" in detail
+
+
+# The observer dependent checks. The state test comes first for each: without an
+# observer the answer is INDETERMINATE, never ABSENT and never PRESENT.
+
+from netcheck.l3.probes import dns, segmentation, spoofing  # noqa: E402
+
+
+def observer_context(**kwargs):
+    saw = kwargs.pop("saw", None)
+    connect = kwargs.pop("connect", None)
+    made = context(**kwargs)
+    made.observer_query = lambda endpoint, token, timeout: saw
+    made.observer_connect = lambda endpoint, host, port, timeout: connect
+    made.resolver = lambda name: "198.51.100.9"
+    return made
+
+
+def config_with(**kwargs):
+    external = kwargs.pop("external", {})
+    observers = kwargs.pop("observers", {})
+    return Config(gateway="10.20.0.1", subnets=["10.20.0.0/24"],
+                  external=external, observers=observers, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "identifier,runner,config",
+    [
+        ("L3A07", filtering.run_egress, config_with(external={"test_host": "h.example"})),
+        ("L3A13", spoofing.run, config_with(external={"test_host": "h.example"})),
+        ("L3A14", filtering.run_fragment_handling,
+         config_with(external={"test_host": "h.example"})),
+        ("L3A15", filtering.run_source_routing,
+         config_with(external={"test_host": "h.example"})),
+        ("L3A09", segmentation.run, config_with(guest_subnet="10.40.0.0/24")),
+    ],
+)
+def test_without_an_observer_the_answer_is_indeterminate(identifier, runner, config):
+    state, _, detail, *_ = runner(observer_context(config=config))
+    assert state == INDETERMINATE
+    assert state not in (ABSENT, PRESENT)
+    assert "no_observer" in detail
+
+
+def test_inbound_v4_without_a_wan_address_is_untested():
+    state, _, detail, *_ = filtering.run_inbound_v4(observer_context())
+    assert state == UNTESTED
+    assert "--wan" in detail
+
+
+def test_cgnat_is_untested_and_never_present():
+    config = config_with(observers={"external": "o:9001"})
+    config.wan_address = "100.64.1.1"
+    state, _, detail, *_ = filtering.run_inbound_v4(observer_context(config=config))
+    assert state == UNTESTED
+    assert state != PRESENT
+    assert "cgnat" in detail
+
+
+def test_inbound_v6_needs_a_global_address_first():
+    config = config_with(observers={"external": "o:9001"})
+    state, _, detail, *_ = filtering.run_inbound_v6(observer_context(config=config))
+    assert state == UNTESTED
+    assert "L3P04" in detail
+
+
+def test_inbound_reports_absent_when_the_observer_gets_in():
+    config = config_with(observers={"external": "o:9001"})
+    config.wan_address = "198.51.100.9"
+    made = observer_context(config=config, connect="open")
+    state, _, _, findings, segments = filtering.run_inbound_v4(made)
+    assert state == ABSENT
+    assert segments == ("external", "lan")
+    assert findings
+
+
+def test_inbound_reports_present_when_the_observer_cannot():
+    config = config_with(observers={"external": "o:9001"})
+    config.wan_address = "198.51.100.9"
+    made = observer_context(config=config, connect="filtered")
+    state, _, _, _, _ = filtering.run_inbound_v4(made)
+    assert state == PRESENT
+
+
+def test_an_unreachable_observer_is_indeterminate_not_a_negative():
+    config = config_with(observers={"external": "o:9001"})
+    config.wan_address = "198.51.100.9"
+    made = observer_context(config=config, connect=None)
+    state, _, detail, *_ = filtering.run_inbound_v4(made)
+    assert state == INDETERMINATE
+    assert state != PRESENT
+    assert "did not answer" in detail
+
+
+def test_egress_absent_when_the_marker_arrives():
+    config = config_with(external={"test_host": "h.example"},
+                         observers={"external": "o:9001"})
+    state, _, _, findings, segments = filtering.run_egress(
+        observer_context(config=config, saw=True)
+    )
+    assert state == ABSENT
+    assert segments == ("lan", "external")
+
+
+def test_a_test_host_that_does_not_resolve_is_refused_not_crashed():
+    config = config_with(external={"test_host": "nonexistent.invalid"})
+    made = observer_context(config=config)
+    made.resolver = lambda name: ""
+    for runner in (filtering.run_egress, filtering.run_fragment_handling,
+                   filtering.run_source_routing, spoofing.run):
+        state, _, detail, *_ = runner(made)
+        assert state == UNTESTED
+        assert "does not resolve" in detail
+
+
+def test_rebinding_without_an_authoritative_server_is_untested():
+    state, _, detail, *_ = dns.run_rebinding(observer_context())
+    assert state == UNTESTED
+    assert "authoritative_ns" in detail
+
+
+def test_rebinding_with_no_answer_is_indeterminate():
+    config = config_with(external={"authoritative_ns": "ns.example"})
+    state, _, detail, *_ = dns.run_rebinding(observer_context(config=config))
+    assert state == INDETERMINATE
+    assert state != ABSENT
+
+
+def test_resolver_scoping_without_an_external_observer_is_indeterminate():
+    state, _, detail, *_ = dns.run_resolver_scoping(observer_context())
+    assert state == INDETERMINATE
+    assert "no_observer" in detail
+
+
+def test_resolver_scoping_absent_when_the_wan_side_answers():
+    config = config_with(observers={"external": "o:9001"})
+    config.wan_address = "198.51.100.9"
+    state, _, _, findings = dns.run_resolver_scoping(
+        observer_context(config=config, connect="open")
+    )
+    assert state == ABSENT
+    assert findings
+
+
+def test_guest_segmentation_reports_each_question_separately():
+    config = config_with(guest_subnet="10.40.0.0/24",
+                         observers={"internal": "10.20.0.20:9001"})
+    made = observer_context(config=config, ports={9001: "open", 80: "closed"})
+    state, _, detail, findings = segmentation.run(made)
+    assert state == ABSENT
+    assert "the LAN host" in detail and "the gateway admin interface" in detail
+
+
+def test_guest_segmentation_present_when_nothing_is_reachable():
+    config = config_with(guest_subnet="10.40.0.0/24",
+                         observers={"internal": "10.20.0.20:9001"})
+    made = observer_context(config=config, ports={})
+    state, _, _, _ = segmentation.run(made)
+    assert state == PRESENT
+
+
+def test_every_control_can_reach_a_non_untested_state():
+    """The whole table is establishable given a complete setup."""
+    from netcheck.cli import registry
+    from netcheck.models import CONTROL_TABLE
+
+    owners = {}
+    for identifier, check in registry().checks.items():
+        for control in check.controls:
+            owners.setdefault(control, []).append(identifier)
+    missing = [name for name, _, _ in CONTROL_TABLE if name not in owners]
+    assert missing == [], "no check can establish: %s" % missing

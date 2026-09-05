@@ -41,6 +41,7 @@ def build_parser(prog: str = "netcheck") -> argparse.ArgumentParser:
         target.add_argument("--json", action="store_true", help="print JSON instead of text")
         target.add_argument("--out", help="write the JSON report to this path")
         target.add_argument("--state-dir", help="where the tool may write state")
+        target.add_argument("--markdown", metavar="PATH", help="also write Markdown")
         if with_layers:
             target.add_argument("--layers", choices=LAYER_CHOICES, default="both")
 
@@ -55,6 +56,7 @@ def build_parser(prog: str = "netcheck") -> argparse.ArgumentParser:
     auditor.add_argument("--out")
     auditor.add_argument("--state-dir")
     auditor.add_argument("--layers", choices=LAYER_CHOICES, default="both")
+    auditor.add_argument("--markdown", metavar="PATH")
 
     prober = sub.add_parser("probe", help="active checks")
     prober.add_argument("--interface")
@@ -133,9 +135,13 @@ def git_commit() -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def _emit(document: dict, text: str, args) -> None:
+def _emit(document: dict, text: str, args, posture=None, findings=None) -> None:
     if getattr(args, "out", None):
         Path(args.out).write_text(report.to_json(document) + "\n")
+    if getattr(args, "markdown", None) and posture is not None:
+        Path(args.markdown).write_text(
+            report.to_markdown(document, posture, findings or [])
+        )
     print(report.to_json(document) if getattr(args, "json", False) else text)
 
 
@@ -169,7 +175,7 @@ def _finish(args, profile, configuration, posture, findings, interface, **extra)
         host=capture_host(extra.get("capture")),
         metadata=metadata,
     )
-    _emit(document, text, args)
+    _emit(document, text, args, posture, findings)
     return posture.exit_code()
 
 
@@ -348,6 +354,9 @@ def run_probe(args) -> int:
         print("skipping %s: %s %s" % (entry.identifier, entry.reason, entry.detail),
               file=sys.stderr)
 
+    if args.wan:
+        configuration.wan_address = config_module.discover_wan(configuration)
+
     context = Context(
         interface=interface, config=configuration, budget=budget, abort=watcher,
         capabilities=capabilities, profile=profile, capture=capture,
@@ -414,7 +423,8 @@ def run_posture(args) -> int:
             raise ConfigError("previous report not found: %s" % previous)
         print(report.diff(json.loads(previous.read_text()), document))
         print()
-    print(report.render(posture, findings, profile, layers=args.layers))
+    text = report.render(posture, findings, profile, layers=args.layers)
+    _emit(document, text, args, posture, findings)
     return posture.exit_code()
 
 

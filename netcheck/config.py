@@ -205,6 +205,36 @@ def _validated(document: dict, source: str) -> Config:
     )
 
 
+def discover_wan(config: Config, fetcher=None) -> str:
+    """The WAN address from the configured echo service, or an empty string.
+
+    Only runs when an echo service is configured. The address it returns is
+    excluded from every sweep unless --wan is given.
+    """
+    service = config.external.get("echo_service", "")
+    if not service:
+        return ""
+    if fetcher is None:
+        def fetcher(url):
+            import urllib.request
+
+            with urllib.request.urlopen(url, timeout=8) as response:
+                return response.read(128).decode("utf-8", "replace")
+
+    try:
+        text = fetcher(service)
+    except Exception:
+        return ""
+    found = re.search(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b", text or "")
+    if not found:
+        return ""
+    try:
+        ipaddress.ip_address(found.group(1))
+    except ValueError:
+        return ""
+    return found.group(1)
+
+
 def fill_from_system(config: Config, interface: str = "") -> Config:
     """Fill anything the file left out from the routing table."""
     chosen = interface or interfaces_module.default_interface()

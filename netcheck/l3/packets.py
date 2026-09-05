@@ -105,3 +105,77 @@ def icmp_redirect(gateway: str, local_ip: str, target: str = REDIRECT_TARGET) ->
     """
     quoted = IP(src=local_ip, dst=target) / UDP(sport=53000, dport=53)
     return IP(src=gateway, dst=local_ip) / ICMP(type=5, code=1, gw=gateway) / quoted
+
+
+# Ports worth knocking on from outside. A short list, because the answer is the
+# same whether one or forty are reachable.
+INBOUND_PORTS = (22, 23, 80, 443, 445, 3389, 7547, 8080, 8443)
+
+# Forty destination ports for the egress test.
+EGRESS_PORTS = (
+    21, 22, 23, 25, 53, 80, 110, 123, 143, 443, 445, 465, 587, 993, 995, 1194,
+    1723, 3306, 3389, 4500, 5060, 5222, 5432, 5900, 6667, 6881, 8080, 8333,
+    8443, 9001, 9418, 11211, 19132, 25565, 27015, 27017, 31337, 33434, 51413,
+    51820,
+)
+
+GRE_PROTOCOL = 47
+ESP_PROTOCOL = 50
+
+# A documentation prefix, so a forged source cannot be mistaken for a real host.
+FORGED_SOURCE = "203.0.113.7"
+
+# Option 131 is loose source routing, 137 is strict.
+LSRR = 131
+SSRR = 137
+
+
+def egress_probes(target: str, marker: str) -> list:
+    """One SYN to each egress port, plus GRE and ESP, plus a direct DNS query."""
+    from scapy.layers.inet import IPOption
+
+    probes = [IP(dst=target) / TCP(dport=port, flags="S") for port in EGRESS_PORTS]
+    probes.append(IP(dst=target) / UDP(dport=53) / marker.encode())
+    probes.append(IP(dst=target, proto=GRE_PROTOCOL) / marker.encode())
+    probes.append(IP(dst=target, proto=ESP_PROTOCOL) / marker.encode())
+    return probes
+
+
+def spoofed(target: str, marker: str, source: str = FORGED_SOURCE) -> Packet:
+    """One packet whose source is outside the local prefix."""
+    return IP(src=source, dst=target) / UDP(dport=9001) / marker.encode()
+
+
+def fragmented(target: str, marker: str) -> list:
+    """Two fragments with the transport header split across the boundary.
+
+    A filter that matches on ports in the first fragment alone sees nothing to
+    match, which is what the check is measuring.
+    """
+    payload = marker.encode() + b"\x00" * 32
+    whole = bytes((IP(dst=target) / UDP(dport=9001) / payload)[UDP])
+    first = IP(dst=target, id=0xBEEF, proto=17, flags="MF", frag=0) / whole[:8]
+    second = IP(dst=target, id=0xBEEF, proto=17, frag=1) / whole[8:]
+    return [first, second]
+
+
+def _route_option(kind: int, via: str):
+    from scapy.layers.inet import IPOption
+
+    packed = bytes(int(part) for part in via.split("."))
+    return IPOption(bytes([kind, 7, 4]) + packed)
+
+
+def source_routed(target: str, via: str, marker: str) -> list:
+    """One loose and one strict source routed packet."""
+    return [
+        IP(dst=target, options=[_route_option(kind, via)])
+        / UDP(dport=9001)
+        / marker.encode()
+        for kind in (LSRR, SSRR)
+    ]
+
+
+def dns_query(resolver: str, name: str) -> Packet:
+    """One DNS query sent straight at a named resolver."""
+    return IP(dst=resolver) / UDP(dport=53) / DNS(rd=1, qd=DNSQR(qname=name))

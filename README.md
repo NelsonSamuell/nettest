@@ -222,7 +222,16 @@ connection at least once.
 | L3A03 | UDP service inventory | active, 24 ports x 3 hosts, 1 retry |
 | L3A04 | Gateway management plane exposure | active, a few per service |
 | L3A06 | UPnP and NAT-PMP mapping | active, 3 |
+| L3A05 | Inbound reachability, IPv4 | active, observer side |
+| L3A07 | Egress filtering | active, 43 |
+| L3A08 | Inbound reachability, IPv6 | active, observer side |
+| L3A09 | Guest segmentation | active, 2 |
+| L3A10 | DNS rebinding protection | active, 1 |
+| L3A11 | Resolver scoping | active, observer side |
 | L3A12 | ICMP redirect acceptance | active, 1 |
+| L3A13 | Anti-spoofing | active, 1 |
+| L3A14 | Fragment handling | active, 2 |
+| L3A15 | Source routing | active, 2 |
 
 L2A05, L2A06 and L2A08 need an observer and report INDETERMINATE without one.
 
@@ -230,11 +239,31 @@ L2A05, L2A06 and L2A08 need an observer and report INDETERMINATE without one.
 
 ```
 netcheck observe --interface <iface> --port 9001 --side internal
+netcheck observe --interface <iface> --port 9001 --side external
 ```
 
-It records only the marker tokens the checks emit, never frame payloads, and
-answers `SEEN <token>` and `SIDE`. Run it on the host or segment a check is
-trying to reach.
+Eleven checks need one and report INDETERMINATE without it. An internal observer
+sits on the segment a check is trying to reach; an external one sits outside the
+NAT boundary and will additionally attempt a connection on request, which is the
+only honest way to ask whether something is reachable from the internet. An
+internal observer refuses `CONNECT`, so a check needing an outside vantage point
+cannot silently get an inside one.
+
+It records only the marker tokens the checks emit, never frame payloads.
+`docs/OBSERVER.md` covers running one, including on a small external server.
+
+## Output
+
+```
+netcheck listen --json --out run.json --markdown run.md
+netcheck posture --from run.json --diff previous.json
+```
+
+The JSON keys are the machine contract. The Markdown writer produces the same
+report for pasting into notes. `--diff` compares two runs and reports what
+changed: a port that opened, a device that appeared, a control that stopped
+enforcing after a firmware update. On a network tested repeatedly that is worth
+more than any single run.
 
 ## The offline audit
 
@@ -255,7 +284,7 @@ at runtime.
 
 ## Status
 
-Milestones 1 to 5 of six are built: the platform capability layer, the posture
+All six milestones are built: the platform capability layer, the posture
 model, config discovery, profiles, both budgets, the abort watcher, the check
 registry, the report, `doctor`, packaging, continuous integration, every layer 2
 check, all ten layer 3 passive checks, the three offline checks, the correlation
