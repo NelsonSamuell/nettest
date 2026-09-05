@@ -3,6 +3,20 @@
 `build_lab.sh` builds a throwaway topology on one machine using Open vSwitch and
 network namespaces. It needs root, and `--teardown` removes everything it made.
 
+## What it needs installed
+
+On a Debian based system:
+
+```
+sudo apt install -y openvswitch-switch nftables iproute2
+sudo systemctl enable --now openvswitch-switch
+```
+
+Installing the package is not enough on its own: `ovs-vsctl` talks to a daemon
+over a socket, so the service has to be running. The script checks for all of
+this before it creates anything, and names the package to install if something
+is missing.
+
 ```
 sudo ./lab/build_lab.sh
 sudo ./lab/build_lab.sh --teardown

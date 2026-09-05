@@ -30,6 +30,33 @@ V6_PREFIX=fd00:dead:beef
 
 say() { printf '%s\n' "$*"; }
 
+# Everything the lab needs, and the package that provides it on a Debian based
+# system. Checked up front, because failing halfway leaves half a topology.
+require_tools() {
+    missing=""
+    command -v ovs-vsctl >/dev/null 2>&1 || missing="$missing openvswitch-switch"
+    command -v nft >/dev/null 2>&1 || missing="$missing nftables"
+    command -v ip >/dev/null 2>&1 || missing="$missing iproute2"
+    command -v python3 >/dev/null 2>&1 || missing="$missing python3"
+
+    if [ -n "$missing" ]; then
+        say "the lab needs tools this machine does not have." >&2
+        say "" >&2
+        say "  sudo apt install -y$missing" >&2
+        say "" >&2
+        exit 1
+    fi
+
+    # The binary is not enough: ovs-vsctl talks to a daemon over a socket.
+    if ! ovs-vsctl show >/dev/null 2>&1; then
+        say "Open vSwitch is installed but its daemon is not answering." >&2
+        say "" >&2
+        say "  sudo systemctl enable --now openvswitch-switch" >&2
+        say "" >&2
+        exit 1
+    fi
+}
+
 require_root() {
     if [ "$(id -u)" -ne 0 ]; then
         say "this script needs root: it creates a bridge and network namespaces" >&2
@@ -253,6 +280,6 @@ build() {
 require_root
 case "${1:-}" in
     --teardown) teardown ;;
-    "") teardown >/dev/null 2>&1 || true; build ;;
+    "") require_tools; teardown >/dev/null 2>&1 || true; build ;;
     *) say "usage: $0 [--teardown]" >&2; exit 1 ;;
 esac
